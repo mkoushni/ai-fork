@@ -3204,6 +3204,77 @@ async fn get_input_items_with_malformed_cursor_returns_400() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_input_items_last_id_falls_back_to_numeric_cursor_for_non_object_items() {
+    let filter = make_filter();
+    // Plain string entries can't carry a synthetic `id` (there's no
+    // object to attach it to), so `last_id` must fall back to the
+    // page's numeric cursor instead of staying `null`.
+    init_store_and_seed(&filter, "resp_non_object", "default", json!(["first", "second"])).await;
+
+    let req = crate::test_utils::make_request(
+        http::Method::GET,
+        "/v1/responses/resp_non_object/input_items?limit=1&order=asc",
+    );
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    let rejection = expect_reject(action);
+    assert_eq!(rejection.status, 200);
+
+    let body: serde_json::Value = serde_json::from_slice(rejection.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["has_more"], true);
+    assert_eq!(
+        body["last_id"], "1",
+        "last_id should fall back to the numeric cursor when the last item has no ID"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_input_items_pagination_usable_for_id_less_array_items() {
+    let filter = make_filter();
+    init_store_and_seed(
+        &filter,
+        "resp_no_ids",
+        "default",
+        json!([
+            {"type": "message", "role": "user", "content": "first"},
+            {"type": "message", "role": "assistant", "content": "second"}
+        ]),
+    )
+    .await;
+
+    let req = crate::test_utils::make_request(
+        http::Method::GET,
+        "/v1/responses/resp_no_ids/input_items?limit=1&order=asc",
+    );
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    let rejection = expect_reject(action);
+    assert_eq!(rejection.status, 200);
+
+    let body: serde_json::Value = serde_json::from_slice(rejection.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["has_more"], true, "second item should remain on the next page");
+    let last_id = body["last_id"]
+        .as_str()
+        .expect("last_id must be a usable cursor, not null, even when input items have no ID field");
+
+    let follow_up = crate::test_utils::make_request(
+        http::Method::GET,
+        &format!("/v1/responses/resp_no_ids/input_items?limit=1&order=asc&after={last_id}"),
+    );
+    let mut follow_up_ctx = crate::test_utils::make_filter_context(&follow_up);
+    let follow_up_action = filter.on_request(&mut follow_up_ctx).await.unwrap();
+    let follow_up_rejection = expect_reject(follow_up_action);
+    assert_eq!(follow_up_rejection.status, 200);
+
+    let follow_up_body: serde_json::Value =
+        serde_json::from_slice(follow_up_rejection.body.as_deref().unwrap()).unwrap();
+    let data = follow_up_body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 1, "the after cursor should resolve to the second item");
+    assert_eq!(data[0]["content"], "second");
+    assert_eq!(follow_up_body["has_more"], false);
+}
+
 // -----------------------------------------------------------------------------
 // DELETE
 // -----------------------------------------------------------------------------
@@ -3774,7 +3845,26 @@ fn list_input_items_next_cursor_uses_item_id() {
 }
 
 #[test]
-fn list_input_items_next_cursor_falls_back_to_numeric_offset() {
+fn list_input_items_assigns_synthetic_ids_to_id_less_array_items() {
+    let record = make_record_with_input(json!([
+        {"type": "message", "role": "user", "content": "hi"},
+        {"type": "message", "role": "assistant", "content": "hello"}
+    ]));
+    // Default order is descending, but synthetic IDs must stay tied to
+    // each item's original stored position, not its display position.
+    let page = list_input_items(&record, &ListParams::default()).unwrap();
+    assert_eq!(
+        page.data[0]["id"], "msg_resp_test_input_1",
+        "the assistant message (original index 1) should surface first in descending order"
+    );
+    assert_eq!(
+        page.data[1]["id"], "msg_resp_test_input_0",
+        "the user message (original index 0) should surface second in descending order"
+    );
+}
+
+#[test]
+fn list_input_items_next_cursor_uses_synthetic_id_when_input_lacks_ids() {
     let record = make_record_with_input(json!([
         {"val": 1},
         {"val": 2},
@@ -3790,9 +3880,32 @@ fn list_input_items_next_cursor_falls_back_to_numeric_offset() {
     assert!(page.has_more);
     assert_eq!(
         page.next_cursor.as_deref(),
-        Some("2"),
-        "next_cursor should fall back to numeric offset when items lack IDs"
+        Some("msg_resp_test_input_1"),
+        "next_cursor should use the synthetic ID assigned to ID-less items, not a raw numeric offset"
     );
+}
+
+#[test]
+fn list_input_items_numeric_cursor_still_works_as_fallback_for_synthetic_ids() {
+    let record = make_record_with_input(json!([
+        {"val": 1},
+        {"val": 2},
+        {"val": 3},
+        {"val": 4}
+    ]));
+    let params = ListParams {
+        cursor: Some("2".to_owned()),
+        order: Order::Ascending,
+        ..Default::default()
+    };
+    let page = list_input_items(&record, &params).unwrap();
+    assert_eq!(
+        page.data.len(),
+        2,
+        "numeric offset cursor should still work even though items now carry synthetic IDs"
+    );
+    assert_eq!(page.data[0]["val"], 3);
+    assert_eq!(page.data[1]["val"], 4);
 }
 
 #[test]
