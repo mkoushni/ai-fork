@@ -3864,6 +3864,64 @@ fn list_input_items_assigns_synthetic_ids_to_id_less_array_items() {
 }
 
 #[test]
+fn list_input_items_mixed_existing_and_synthetic_ids_paginate_correctly() {
+    let record = make_record_with_input(json!([
+        {"id": "a", "type": "message"},
+        {"type": "message", "content": "hi"}
+    ]));
+    let base_params = ListParams {
+        limit: 1,
+        order: Order::Ascending,
+        ..Default::default()
+    };
+
+    let page1 = list_input_items(&record, &base_params).unwrap();
+    assert_eq!(
+        page1.data[0]["id"], "a",
+        "the item's existing id must be preserved, not overwritten"
+    );
+    assert!(page1.has_more);
+    let cursor_after_a = page1.next_cursor.clone();
+    assert_eq!(
+        cursor_after_a.as_deref(),
+        Some("a"),
+        "next_cursor should reuse the item's existing id"
+    );
+
+    let page2 = list_input_items(
+        &record,
+        &ListParams {
+            cursor: cursor_after_a,
+            ..base_params.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        page2.data[0]["id"], "msg_resp_test_input_1",
+        "the id-less second item should get a synthetic id keyed by its original index"
+    );
+    assert!(!page2.has_more, "the mixed array is exhausted after the second item");
+    assert!(page2.next_cursor.is_none());
+
+    // Paginating again using the synthetic id itself as the cursor must still resolve it as an
+    // ID-based cursor (not fall through to the numeric fallback), correctly yielding an empty
+    // page since it was the last item.
+    let page3 = list_input_items(
+        &record,
+        &ListParams {
+            cursor: Some("msg_resp_test_input_1".to_owned()),
+            ..base_params
+        },
+    )
+    .unwrap();
+    assert!(
+        page3.data.is_empty(),
+        "cursor after the synthetic id of the last item should yield an empty page"
+    );
+    assert!(!page3.has_more);
+}
+
+#[test]
 fn list_input_items_next_cursor_uses_synthetic_id_when_input_lacks_ids() {
     let record = make_record_with_input(json!([
         {"val": 1},
