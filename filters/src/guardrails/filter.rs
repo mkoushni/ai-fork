@@ -164,9 +164,11 @@ fn record_verdict(ctx: &mut HttpFilterContext<'_>, result: GuardResult) -> Resul
             Ok(FilterAction::Reject(Rejection::status(403).with_body(reason)))
         },
         GuardResult::Redact { reason, .. } => {
-            // Full body replacement deferred to #579 (NeMo mask/redact action).
-            tracing::warn!(verdict, %reason, "ai_guardrails: provider verdict; forwarding unchanged until #579");
-            Ok(FilterAction::Continue)
+            // Body replacement is tracked in #579. Until it is implemented, fail
+            // closed so the original content is never forwarded while the status
+            // is recorded as redacted.
+            tracing::warn!(verdict, %reason, "ai_guardrails: redact verdict; rejecting until body replacement is implemented (#579)");
+            Ok(FilterAction::Reject(Rejection::status(403).with_body(reason)))
         },
     }
 }
