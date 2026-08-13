@@ -403,9 +403,11 @@ async fn on_request_body_modified_never_forwards_original_secret() {
 
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
 
+    let rejection = as_rejection(action);
     assert!(
-        matches!(action, praxis_filter::FilterAction::Reject(_)),
-        "a redact verdict must reject; the original body containing the secret must not be forwarded"
+        !String::from_utf8_lossy(&rejection.body.clone().unwrap_or_default())
+            .contains("123-45-6789"),
+        "the original secret must not appear in the rejection body"
     );
     assert_eq!(
         ctx.filter_results.get("ai_guardrails").unwrap().get("status"),
