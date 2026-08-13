@@ -390,8 +390,7 @@ async fn on_request_body_modified_never_forwards_original_secret() {
 
     let rejection = as_rejection(filter.on_request_body(&mut ctx, &mut body, true).await.unwrap());
     assert!(
-        !String::from_utf8_lossy(&rejection.body.clone().unwrap_or_default())
-            .contains("123-45-6789"),
+        !String::from_utf8_lossy(&rejection.body.clone().unwrap_or_default()).contains("123-45-6789"),
         "the original secret must not appear in the rejection body"
     );
     assert_eq!(
