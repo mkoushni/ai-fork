@@ -1675,14 +1675,7 @@ async fn json_response_split_across_chunks_defers_capture_until_eos() {
 
     let mut body2 = Some(Bytes::from(chunk2.to_owned()));
     drop(filter.on_response_body(&mut ctx, &mut body2, false).unwrap());
-    assert!(
-        store.get_by_task_id("task-split").is_none(),
-        "route must not be committed before EOS is confirmed"
-    );
-    assert!(
-        ctx.filter_metadata.contains_key("a2a.response.tentative_json"),
-        "tentative parse must be held pending EOS"
-    );
+    assert_tentative_pending(store, &ctx, "task-split");
 
     let mut eos = None;
     drop(filter.on_response_body(&mut ctx, &mut eos, true).unwrap());
@@ -3481,6 +3474,21 @@ fn seed_response_capture(ctx: &mut praxis_filter::HttpFilterContext<'_>) {
         .insert("a2a.response.capture_enabled".to_owned(), "true".to_owned());
     ctx.filter_metadata
         .insert("a2a.response.cluster".to_owned(), "agent-a".to_owned());
+}
+
+fn assert_tentative_pending(
+    store: &LocalTaskRouteStore,
+    ctx: &praxis_filter::HttpFilterContext<'_>,
+    task_id: &str,
+) {
+    assert!(
+        store.get_by_task_id(task_id).is_none(),
+        "route must not be committed before EOS is confirmed"
+    );
+    assert!(
+        ctx.filter_metadata.contains_key("a2a.response.tentative_json"),
+        "tentative parse must be held pending EOS"
+    );
 }
 
 #[expect(clippy::too_many_lines, reason = "repetitive per-key cleared assertions")]
