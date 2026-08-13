@@ -339,10 +339,8 @@ async fn on_request_body_blocked_writes_filter_results() {
     );
 }
 
-#[tokio::test]
-async fn on_request_body_modified_rejects_with_403() {
+async fn nemo_pii_redact_filter() -> (Box<dyn praxis_filter::HttpFilter>, wiremock::MockServer) {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
-
     let mock_server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -352,23 +350,25 @@ async fn on_request_body_modified_rejects_with_403() {
         })))
         .mount(&mock_server)
         .await;
+    let filter = nemo_filter(&format!("{}/v1/guardrail/checks", mock_server.uri()));
+    (filter, mock_server)
+}
 
-    let endpoint = format!("{}/v1/guardrail/checks", mock_server.uri());
-    let filter = nemo_filter(&endpoint);
+#[tokio::test]
+async fn on_request_body_modified_rejects_with_403() {
+    let (filter, _server) = nemo_pii_redact_filter().await;
     let req = crate::test_utils::make_request(http::Method::POST, "/v1/chat");
     let mut ctx = crate::test_utils::make_filter_context(&req);
     let mut body = Some(bytes::Bytes::from_static(
         br#"{"messages":[{"role":"user","content":"my ssn is 123-45-6789"}]}"#,
     ));
 
-    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-    let rejection = as_rejection(action);
+    let rejection = as_rejection(filter.on_request_body(&mut ctx, &mut body, true).await.unwrap());
     assert_eq!(
         rejection.status, 403,
         "redact verdict must reject with HTTP 403 until body replacement (#579) is implemented"
     );
-    let rejection_body = rejection.body.unwrap();
-    let body_text = String::from_utf8_lossy(&rejection_body);
+    let body_text = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
     assert!(
         body_text.contains("pii masking"),
         "rejection body should include the blocked rail name, got: {body_text}"
@@ -382,28 +382,13 @@ async fn on_request_body_modified_rejects_with_403() {
 
 #[tokio::test]
 async fn on_request_body_modified_never_forwards_original_secret() {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
-
-    let mock_server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": "modified",
-            "content": "my ssn is [REDACTED]",
-            "rails_status": {"pii masking": {"status": "blocked"}}
-        })))
-        .mount(&mock_server)
-        .await;
-
-    let endpoint = format!("{}/v1/guardrail/checks", mock_server.uri());
-    let filter = nemo_filter(&endpoint);
+    let (filter, _server) = nemo_pii_redact_filter().await;
     let req = crate::test_utils::make_request(http::Method::POST, "/v1/chat");
     let mut ctx = crate::test_utils::make_filter_context(&req);
     let original_body = br#"{"messages":[{"role":"user","content":"my ssn is 123-45-6789"}]}"#;
     let mut body = Some(bytes::Bytes::from_static(original_body));
 
-    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-
-    let rejection = as_rejection(action);
+    let rejection = as_rejection(filter.on_request_body(&mut ctx, &mut body, true).await.unwrap());
     assert!(
         !String::from_utf8_lossy(&rejection.body.clone().unwrap_or_default())
             .contains("123-45-6789"),
