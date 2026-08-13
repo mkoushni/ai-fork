@@ -366,7 +366,7 @@ async fn on_request_body_modified_rejects_with_403() {
     let rejection = as_rejection(filter.on_request_body(&mut ctx, &mut body, true).await.unwrap());
     assert_eq!(
         rejection.status, 403,
-        "redact verdict must reject with HTTP 403 until body replacement (#579) is implemented"
+        "redact verdict must reject with HTTP 403"
     );
     let body_text = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
     assert!(

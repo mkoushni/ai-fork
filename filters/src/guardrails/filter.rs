@@ -164,10 +164,9 @@ fn record_verdict(ctx: &mut HttpFilterContext<'_>, result: GuardResult) -> Resul
             Ok(FilterAction::Reject(Rejection::status(403).with_body(reason)))
         },
         GuardResult::Redact { reason, .. } => {
-            // Body replacement is tracked in #579. Until it is implemented, fail
-            // closed so the original content is never forwarded while the status
-            // is recorded as redacted.
-            tracing::warn!(verdict, %reason, "ai_guardrails: redact verdict; rejecting until body replacement is implemented (#579)");
+            // Fail closed: the original content must not be forwarded while the
+            // status is recorded as redacted.
+            tracing::warn!(verdict, %reason, "ai_guardrails: redact verdict; rejecting request");
             Ok(FilterAction::Reject(Rejection::status(403).with_body(reason)))
         },
     }

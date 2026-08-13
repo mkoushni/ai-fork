@@ -73,9 +73,8 @@ fn nemo_guardrails_block_rejects_with_403() {
     );
 }
 
-/// `NeMo` returns `"modified"` (redact verdict) → proxy rejects with 403
-/// until body replacement is implemented (#579). The original sensitive
-/// body must never be forwarded to the upstream.
+/// `NeMo` returns `"modified"` (redact verdict) → proxy rejects with 403.
+/// The original sensitive body must never be forwarded to the upstream.
 #[test]
 fn nemo_guardrails_redact_rejects_with_403() {
     let backend = start_backend_with_shutdown("ok");
@@ -98,7 +97,7 @@ fn nemo_guardrails_redact_rejects_with_403() {
 
     assert_eq!(
         status, 403,
-        "NeMo 'modified' must reject with 403 until body replacement (#579) is implemented"
+        "NeMo 'modified' must reject with 403"
     );
     assert!(
         body.contains("pii masking"),
