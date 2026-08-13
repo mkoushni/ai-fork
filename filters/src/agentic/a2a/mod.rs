@@ -396,7 +396,7 @@ fn handle_pending_tentative(
     }
     let has_new_content = body
         .as_ref()
-        .is_some_and(|b| b.iter().any(|byte| !byte.is_ascii_whitespace()));
+        .is_some_and(|b| b.iter().any(|&byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r')));
     if has_new_content {
         debug!("tentative route discarded: trailing non-whitespace after balanced JSON prefix");
         clear_capture_metadata(ctx);
@@ -509,11 +509,11 @@ fn parse_to_tentative(ctx: &mut HttpFilterContext<'_>) {
                 // the tentative guard cannot be bypassed on subsequent chunks.
                 clear_capture_metadata(ctx);
             }
-        }
+        },
         None => {
             // Balanced but unparseable: unconditionally terminal.
             clear_capture_metadata(ctx);
-        }
+        },
     }
 }
 
