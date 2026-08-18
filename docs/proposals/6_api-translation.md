@@ -16,6 +16,10 @@ discussion: >-
 status: proposed
 authors:
   - mkoushni
+graduation_criteria:
+  - "How? section with requirements and design"
+stakeholders:
+  - # TODO: add relevant maintainer/domain-expert handles before merge
 ---
 
 # API Translation
