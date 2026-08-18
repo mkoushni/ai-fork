@@ -73,21 +73,28 @@ streaming-transport rewriting only.
   streaming transports are not uniform and must be handled with
   transport-specific decoders rather than a single SSE path:
 
-  - **Azure OpenAI / Cohere** use Server-Sent Events (`text/event-stream`):
-    `data:` lines, blank-line delimiters, and `data: [DONE]`-style
-    termination, though each provider's event payload shape differs from
-    OpenAI's and must be mapped explicitly rather than assumed compatible.
+  - **Azure OpenAI / Cohere / Vertex AI** use Server-Sent Events
+    (`text/event-stream`): `data:` lines, blank-line delimiters, and
+    `data: [DONE]`-style termination, though each provider's event
+    payload shape differs from OpenAI's and must be mapped explicitly
+    rather than assumed compatible. Vertex AI's `streamGenerateContent`
+    endpoint defaults to returning a raw JSON array instead (each object
+    delivered incrementally, with no guarantee that HTTP chunk
+    boundaries align with JSON object boundaries — a known source of
+    parse failures in other implementations). The outbound request to
+    Vertex AI must always include `?alt=sse` so the response is genuine
+    SSE framing, letting Vertex AI share the same decoder path as
+    Azure/Cohere.
   - **Amazon Bedrock** (`InvokeModelWithResponseStream`) uses
     `application/vnd.amazon.eventstream` binary framing: length-prefixed
     messages with headers, payload, and CRC32 checksums. This is not SSE
     and must not be processed through the SSE decoder. In-stream exception
     events and normal stream completion must both be mapped to the
     consumer contract.
-  - **Vertex AI** uses its own event-stream framing and must be handled
-    separately.
 
-  Each transport requires its own decoder with fixtures covering: normal
-  chunk events, stream completion, and in-stream exception or error events.
+  Each transport family (SSE, Bedrock's binary event-stream) requires its
+  own decoder with fixtures covering: normal chunk events, stream
+  completion, and in-stream exception or error events.
 
   All decoders must operate **incrementally**: maintain only a bounded
   incomplete-frame buffer, emit complete events as soon as they are
@@ -118,8 +125,8 @@ streaming-transport rewriting only.
     merge. Any fixture containing a real key, token, or signature must
     be rejected.
   - **Positive coverage.** Normal request/response, error response, all
-    supported streaming transports (SSE for Azure/Cohere, Bedrock
-    event-stream, Vertex AI event-stream), and normal end-of-stream
+    supported streaming transports (SSE for Azure/Cohere/Vertex AI,
+    Bedrock's binary event-stream), and normal end-of-stream
     termination.
   - **Negative coverage.** Unsupported or unknown request fields,
     malformed stream frames, arbitrary chunk splits across frame
