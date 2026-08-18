@@ -45,11 +45,8 @@ inputs such as model names, URI paths, or request headers. If the trusted
 route result is absent or names a provider not in the configured allowlist,
 the stage rejects the request and halts the pipeline.
 
-Translation is a **pure protocol concern**. Credential injection is out of
-scope and is addressed as a separate pipeline stage (see
-`docs/proposals/6_provider-credentials.md`). The two stages are designed
-to compose — translation runs first, credential injection follows — so
-that the translation layer never needs access to secret material.
+Translation is a **pure protocol concern** — request/response schema and
+streaming-transport rewriting only.
 
 ### Goals
 
@@ -58,8 +55,7 @@ that the translation layer never needs access to secret material.
   and rewrite provider responses back to the canonical OpenAI-shaped
   consumer-facing schema. Supported providers are defined by a versioned,
   operator-configured allowlist. Each allowlist entry must declare: the
-  provider identifier, transport protocol, credential-bearing locations
-  (headers, query parameters, body fields), request and response schemas,
+  provider identifier, transport protocol, request and response schemas,
   and a fixture manifest. Providers for the first release, matching
   [praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762):
   **AWS Bedrock** (Converse and InvokeModel), **Google Vertex AI**
@@ -103,21 +99,6 @@ that the translation layer never needs access to secret material.
   the translation pipeline predictable, independently testable, and safe
   to compose with other filter stages.
 
-- **Consumer credential removal.** Consumer-supplied provider credentials
-  must be stripped across every location where a provider can accept them,
-  before the credential injection stage runs (`credential_inject.rs`
-  today only strips the `Authorization` header; this proposal requires
-  the full per-provider surface). The scope covers: authentication
-  headers (e.g. `Authorization`, `X-Goog-Api-Key`, Azure's
-  `api-key`), SigV4 query parameters for Bedrock (e.g.
-  `X-Amz-Credential`, `X-Amz-Signature`, `X-Amz-Security-Token`,
-  `X-Amz-Algorithm`), URI path components that embed identity or session
-  tokens, and any nested body fields used by a provider for
-  authentication. Each provider's complete credential-bearing surface
-  must be enumerated in a fixture that asserts the final forwarded
-  request contains only runtime-injected credentials and nothing
-  consumer-supplied.
-
 - **Fixture-backed correctness with provenance and negative coverage.**
   Fixtures are the acceptance gate — a translation is correct when its
   output matches the fixture, not when it passes a unit test written from
@@ -129,20 +110,18 @@ that the translation layer never needs access to secret material.
     schema version, and the source of truth it was derived from (e.g.
     provider SDK test suite, live endpoint capture, specification). Fixture
     updates require a corresponding provenance update.
-  - **Secret scan.** Fixtures must be scanned for credential material
-    before merge. Any fixture containing a real key, token, or signature
-    must be rejected.
+  - **Secret scan.** Fixtures must be scanned for secret material before
+    merge. Any fixture containing a real key, token, or signature must
+    be rejected.
   - **Positive coverage.** Normal request/response, error response, all
     supported streaming transports (SSE for Azure/Cohere, Bedrock
     event-stream, Vertex AI event-stream), and normal end-of-stream
     termination.
   - **Negative coverage.** Unsupported or unknown request fields,
-    malformed stream frames, arbitrary chunk splits across frame boundaries,
-    consumer-supplied credentials in every credential-bearing location
-    (asserting they are absent from the forwarded request), in-stream
-    exception and error events, and mid-stream provider failures. A
-    negative fixture that does not assert a rejection is not a negative
-    fixture.
+    malformed stream frames, arbitrary chunk splits across frame
+    boundaries, in-stream exception and error events, and mid-stream
+    provider failures. A negative fixture that does not assert a
+    rejection is not a negative fixture.
 
 - **Fail closed on untranslatable input.** If the translation stage
   cannot produce a valid provider request (missing required field,
@@ -172,9 +151,6 @@ that the translation layer never needs access to secret material.
   provider-specific request fields (e.g. Anthropic's `top_k`, Bedrock's
   `guardrailConfig`) through translation without validation errors is
   tracked separately by praxis-proxy/ai#385.
-- **Credential injection and management.** Cloud token generation, API
-  key injection, token caching, and refresh are handled by the separate
-  provider-credential stage.
 - **Routing and authorization.** Provider selection and caller
   authorization are upstream concerns, already covered by existing Praxis
   stages.
@@ -191,14 +167,14 @@ that the translation layer never needs access to secret material.
 ### Motivation
 
 Each inference provider exposes an incompatible proprietary API: field
-names, request envelope shapes, error codes, streaming event schemas,
-required headers, and authentication conventions all differ across
-Bedrock, Vertex AI, Azure OpenAI, and Cohere — the provider set tracked
-by [praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762).
+names, request envelope shapes, error codes, and streaming event schemas
+all differ across Bedrock, Vertex AI, Azure OpenAI, and Cohere — the
+provider set tracked by
+[praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762).
 (Anthropic already has this solved; see praxis-proxy/ai#103.) Praxis can
 already select a provider by routing, but the routed request still
 carries the consumer's OpenAI-shaped wire format. Without a translation
-layer for these remaining providers, one of three failure modes applies:
+layer for these remaining providers, one of two failure modes applies:
 
 1. **Consumer complexity.** Every calling application must implement
    provider-specific adapters, exposing business code to the full surface
@@ -207,12 +183,8 @@ layer for these remaining providers, one of three failure modes applies:
 2. **Operational fragmentation.** Operators run separate ingress
    endpoints per provider, preventing unified policy enforcement,
    observability, and traffic shaping.
-3. **Credential leakage.** Without an explicit strip step, consumer-
-   supplied provider credentials (e.g. an `Authorization` header from a
-   development client) may be forwarded to the provider, bypassing the
-   runtime's credential authority.
 
-A translation layer eliminates all three failure modes by making provider
+A translation layer eliminates both failure modes by making provider
 heterogeneity an infrastructure concern:
 
 - **Consumer stability.** Applications code to one stable inference
@@ -221,13 +193,9 @@ heterogeneity an infrastructure concern:
 - **Operational coherence.** A single gateway endpoint handles all
   providers. Policy, rate limiting, observability, and routing all
   operate uniformly.
-- **Security boundary.** The translation stage is the defined point where
-  consumer credentials are stripped and the pipeline is handed off to
-  the credential injection stage. No other stage needs to reason about
-  this responsibility.
 - **Testability.** Deterministic, ordered mutations with golden fixtures
   mean translation correctness can be verified independently of the
-  routing, authorization, and credential stages.
+  routing and authorization stages.
 
 ### User Stories
 
@@ -245,13 +213,6 @@ heterogeneity an infrastructure concern:
   translated transparently — preserving event framing and ordering — so
   that clients using streaming inference observe consistent behavior
   regardless of which provider served the request.
-
-- As a **security engineer**, I want consumer-supplied provider
-  credentials stripped across every credential-bearing location —
-  headers, SigV4 query parameters, URI path tokens, and body fields —
-  before any authorized credential is injected, so that the runtime is
-  the sole authority on which credential reaches a provider regardless
-  of which transport mechanism the consumer used to supply it.
 
 - As a **security engineer**, I want provider identity derived
   exclusively from the trusted route result stored in stream state, and
@@ -285,10 +246,3 @@ heterogeneity an infrastructure concern:
   duplicated here).
 - [praxis-proxy/ai#385](https://github.com/praxis-proxy/ai/issues/385) —
   provider-specific field passthrough (separate, not duplicated here).
-- [praxis-proxy/ai#70](https://github.com/praxis-proxy/ai/issues/70) —
-  parent Epic: AI Inference, which already lists credential injection
-  (`filters/src/routing/credential_inject.rs`) as a foundational,
-  shipped building block for the companion credential-injection stage
-  (`docs/proposals/6_provider-credentials.md`).
-- `docs/proposals/6_provider-credentials.md` — companion proposal for
-  the credential-injection stage that composes with this one.
