@@ -1,11 +1,18 @@
 ---
-issue: https://github.com/opendatahub-io/praxis-extproc/issues/6
+issue: https://github.com/praxis-proxy/ai/issues/762
 discussion: >-
-  Sub-task of epic issue #6, which was opened from the project discussion
-  phase and serves as the approved discussion artifact for all child
-  proposals. No separate GitHub Discussion was opened for this sub-task;
-  the epic issue is considered sufficient per maintainer agreement.
-  See https://github.com/opendatahub-io/praxis-extproc/issues/6
+  Originally opened as a sub-task of epic issue
+  opendatahub-io/praxis-extproc#6, which served as the approved discussion
+  artifact per maintainer agreement (no separate GitHub Discussion opened).
+  Per opendatahub-io/praxis-extproc#31 (comment), this proposal was migrated
+  into this repository because the work belongs in this repo's filter tree.
+  It is re-scoped here as the proposal for praxis-proxy/ai#762, a sub-task
+  of the pre-existing praxis-proxy/ai#114 (itself under Epic
+  praxis-proxy/ai#363) carrying the translator acceptance criteria adapted
+  from opendatahub-io/praxis-extproc#6, since Anthropic <-> OpenAI
+  translation is already covered by praxis-proxy/ai#103 and
+  praxis-proxy/ai#638. See opendatahub-io/praxis-extproc#6 and
+  praxis-proxy/ai#762.
 status: proposed
 authors:
   - mkoushni
@@ -16,11 +23,20 @@ authors:
 ## What?
 
 Introduce a provider-aware translation stage to the Praxis filter pipeline
-that bidirectionally rewrites inference traffic between the
-consumer-facing contract and provider-specific wire formats. The stage
-operates after authorization and route selection have completed, covers
-both buffered and streaming (SSE) responses, and produces a deterministic,
-ordered set of header and body mutations.
+that bidirectionally rewrites inference traffic between the OpenAI-shaped
+consumer-facing contract and the wire formats of AWS Bedrock, Google
+Vertex AI, Azure OpenAI, and Cohere — the provider set tracked by
+[praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762), a
+sub-task of [praxis-proxy/ai#114](https://github.com/praxis-proxy/ai/issues/114).
+The stage operates after authorization and route selection have completed,
+covers both buffered and streaming (SSE and non-SSE) responses, and
+produces a deterministic, ordered set of header and body mutations.
+
+Anthropic Messages <-> OpenAI translation is **explicitly out of scope**
+here: it already has a working, tested implementation
+(`apis/src/anthropic/to_openai/`, `apis/src/anthropic/stream_events/`)
+tracked by praxis-proxy/ai#103 and praxis-proxy/ai#638. This proposal
+covers only the remaining, currently untranslated providers.
 
 The translation stage derives the target provider exclusively from the
 trusted route result written into stream state by the authorization and
@@ -30,31 +46,37 @@ route result is absent or names a provider not in the configured allowlist,
 the stage rejects the request and halts the pipeline.
 
 Translation is a **pure protocol concern**. Credential injection is out of
-scope and is addressed as a separate pipeline stage (see issue #6,
-provider-credential sub-task). The two stages are designed to compose —
-translation runs first, credential injection follows — so that the
-translation layer never needs access to secret material.
+scope and is addressed as a separate pipeline stage (see
+`docs/proposals/6_provider-credentials.md`). The two stages are designed
+to compose — translation runs first, credential injection follows — so
+that the translation layer never needs access to secret material.
 
 ### Goals
 
-- **Bidirectional format translation.** Rewrite consumer inference
-  requests to the wire format required by the selected provider, and
-  rewrite provider responses back to the canonical consumer-facing schema.
-  Supported providers are defined by a versioned, operator-configured
-  allowlist. Each allowlist entry must declare: the provider identifier,
-  transport protocol, credential-bearing locations (headers, query
-  parameters, body fields), request and response schemas, and a fixture
-  manifest. Providers for the first release: OpenAI, Anthropic, Vertex
-  AI, and Bedrock. Adding a provider requires an explicit allowlist entry
-  with all required fields — fixture inclusion alone does not grant
-  support scope.
+- **Bidirectional format translation.** Rewrite OpenAI-shaped consumer
+  inference requests to the wire format required by the selected provider,
+  and rewrite provider responses back to the canonical OpenAI-shaped
+  consumer-facing schema. Supported providers are defined by a versioned,
+  operator-configured allowlist. Each allowlist entry must declare: the
+  provider identifier, transport protocol, credential-bearing locations
+  (headers, query parameters, body fields), request and response schemas,
+  and a fixture manifest. Providers for the first release, matching
+  [praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762):
+  **AWS Bedrock** (Converse and InvokeModel), **Google Vertex AI**
+  (Gemini), **Azure OpenAI**, and **Cohere**. Anthropic is intentionally
+  excluded — it is already covered by the existing `anthropic_to_openai`
+  filter (praxis-proxy/ai#103, praxis-proxy/ai#638). Adding a provider
+  requires an explicit allowlist entry with all required fields — fixture
+  inclusion alone does not grant support scope.
 
 - **Streaming correctness with transport-specific framing.** Provider
   streaming transports are not uniform and must be handled with
   transport-specific decoders rather than a single SSE path:
 
-  - **OpenAI / Anthropic** use Server-Sent Events (`text/event-stream`):
-    `data:` lines, blank-line delimiters, and `data: [DONE]` termination.
+  - **Azure OpenAI / Cohere** use Server-Sent Events (`text/event-stream`):
+    `data:` lines, blank-line delimiters, and `data: [DONE]`-style
+    termination, though each provider's event payload shape differs from
+    OpenAI's and must be mapped explicitly rather than assumed compatible.
   - **Amazon Bedrock** (`InvokeModelWithResponseStream`) uses
     `application/vnd.amazon.eventstream` binary framing: length-prefixed
     messages with headers, payload, and CRC32 checksums. This is not SSE
@@ -69,11 +91,12 @@ translation layer never needs access to secret material.
 
   All decoders must operate **incrementally**: maintain only a bounded
   incomplete-frame buffer, emit complete events as soon as they are
-  recognised, and never buffer the full stream. The current ExtProc server
-  accumulates the full response body (up to 10 MiB) before running
-  filters; the streaming translation path must define explicit parser state
-  that avoids this full-buffer model and handles valid end-of-stream
-  termination correctly regardless of chunk boundaries.
+  recognised, and never buffer the full stream. This filter framework
+  already exposes `BodyMode::Stream` for exactly this purpose (see e.g.
+  `apis/src/anthropic/stream_events/`) — the streaming translation path
+  for each new provider must use it rather than `BodyMode::StreamBuffer`,
+  and must handle valid end-of-stream termination correctly regardless of
+  chunk boundaries.
 
 - **Deterministic mutation ordering.** Header and body mutations produced
   by translation must be applied in a fixed, documented order. This makes
@@ -82,15 +105,18 @@ translation layer never needs access to secret material.
 
 - **Consumer credential removal.** Consumer-supplied provider credentials
   must be stripped across every location where a provider can accept them,
-  before the credential injection stage runs. The scope is per-provider
-  and covers: authentication headers (e.g. `Authorization`, `x-api-key`,
-  `X-Goog-Api-Key`), SigV4 query parameters (e.g. `X-Amz-Credential`,
-  `X-Amz-Signature`, `X-Amz-Security-Token`, `X-Amz-Algorithm`), URI
-  path components that embed identity or session tokens, and any nested
-  body fields used by the provider for authentication. Each provider's
-  complete credential-bearing surface must be enumerated in a fixture that
-  asserts the final forwarded request contains only runtime-injected
-  credentials and nothing consumer-supplied.
+  before the credential injection stage runs (`credential_inject.rs`
+  today only strips the `Authorization` header; this proposal requires
+  the full per-provider surface). The scope covers: authentication
+  headers (e.g. `Authorization`, `X-Goog-Api-Key`, Azure's
+  `api-key`), SigV4 query parameters for Bedrock (e.g.
+  `X-Amz-Credential`, `X-Amz-Signature`, `X-Amz-Security-Token`,
+  `X-Amz-Algorithm`), URI path components that embed identity or session
+  tokens, and any nested body fields used by a provider for
+  authentication. Each provider's complete credential-bearing surface
+  must be enumerated in a fixture that asserts the final forwarded
+  request contains only runtime-injected credentials and nothing
+  consumer-supplied.
 
 - **Fixture-backed correctness with provenance and negative coverage.**
   Fixtures are the acceptance gate — a translation is correct when its
@@ -107,8 +133,9 @@ translation layer never needs access to secret material.
     before merge. Any fixture containing a real key, token, or signature
     must be rejected.
   - **Positive coverage.** Normal request/response, error response, all
-    supported streaming transports (SSE, Bedrock event-stream), and normal
-    end-of-stream termination.
+    supported streaming transports (SSE for Azure/Cohere, Bedrock
+    event-stream, Vertex AI event-stream), and normal end-of-stream
+    termination.
   - **Negative coverage.** Unsupported or unknown request fields,
     malformed stream frames, arbitrary chunk splits across frame boundaries,
     consumer-supplied credentials in every credential-bearing location
@@ -138,6 +165,13 @@ translation layer never needs access to secret material.
 
 ### Non-Goals
 
+- **Anthropic Messages translation.** Already implemented and tracked
+  separately by praxis-proxy/ai#103 and praxis-proxy/ai#638
+  (`apis/src/anthropic/to_openai/`). Not duplicated here.
+- **Provider-specific field passthrough.** Preserving unknown/
+  provider-specific request fields (e.g. Anthropic's `top_k`, Bedrock's
+  `guardrailConfig`) through translation without validation errors is
+  tracked separately by praxis-proxy/ai#385.
 - **Credential injection and management.** Cloud token generation, API
   key injection, token caching, and refresh are handled by the separate
   provider-credential stage.
@@ -159,10 +193,12 @@ translation layer never needs access to secret material.
 Each inference provider exposes an incompatible proprietary API: field
 names, request envelope shapes, error codes, streaming event schemas,
 required headers, and authentication conventions all differ across
-OpenAI, Anthropic, Vertex AI, and Bedrock. Praxis can already select a
-provider by routing, but the routed request still carries the consumer's
-wire format. Without a translation layer, one of three failure modes
-applies:
+Bedrock, Vertex AI, Azure OpenAI, and Cohere — the provider set tracked
+by [praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762).
+(Anthropic already has this solved; see praxis-proxy/ai#103.) Praxis can
+already select a provider by routing, but the routed request still
+carries the consumer's OpenAI-shaped wire format. Without a translation
+layer for these remaining providers, one of three failure modes applies:
 
 1. **Consumer complexity.** Every calling application must implement
    provider-specific adapters, exposing business code to the full surface
@@ -232,3 +268,27 @@ heterogeneity an infrastructure concern:
   covered by golden request, response, error, and streaming fixtures,
   so that regressions in format correctness are caught before reaching
   production, independently of provider availability.
+
+## Related
+
+- [praxis-proxy/ai#762](https://github.com/praxis-proxy/ai/issues/762) —
+  tracking issue this proposal implements (translator acceptance criteria
+  adapted from opendatahub-io/praxis-extproc#6).
+- [praxis-proxy/ai#114](https://github.com/praxis-proxy/ai/issues/114) —
+  parent issue: Schema translation: OpenAI to Bedrock, Vertex AI, Azure,
+  Cohere.
+- [praxis-proxy/ai#363](https://github.com/praxis-proxy/ai/issues/363) —
+  parent Epic: API Translation.
+- [praxis-proxy/ai#103](https://github.com/praxis-proxy/ai/issues/103),
+  [praxis-proxy/ai#638](https://github.com/praxis-proxy/ai/issues/638) —
+  Anthropic Messages <-> OpenAI translation (already implemented; not
+  duplicated here).
+- [praxis-proxy/ai#385](https://github.com/praxis-proxy/ai/issues/385) —
+  provider-specific field passthrough (separate, not duplicated here).
+- [praxis-proxy/ai#70](https://github.com/praxis-proxy/ai/issues/70) —
+  parent Epic: AI Inference, which already lists credential injection
+  (`filters/src/routing/credential_inject.rs`) as a foundational,
+  shipped building block for the companion credential-injection stage
+  (`docs/proposals/6_provider-credentials.md`).
+- `docs/proposals/6_provider-credentials.md` — companion proposal for
+  the credential-injection stage that composes with this one.
