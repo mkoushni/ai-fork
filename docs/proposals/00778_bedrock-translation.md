@@ -16,7 +16,10 @@ graduation_criteria:
   - "InvokeModel model-family scope (Anthropic-shaped body reuse vs. new adapters) reviewed by stakeholders"
   - "Bedrock API key rotation/hot-reload strategy for credential_inject reviewed by stakeholders"
 stakeholders:
-  - # TODO: add relevant maintainer/domain-expert handles before merge
+  - shaneutt
+  - alexsnaps
+  - aslakknutsen
+  - szedan-rh
 ---
 
 # API Translation: AWS Bedrock (Converse + InvokeModel)
