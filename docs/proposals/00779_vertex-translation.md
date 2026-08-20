@@ -17,7 +17,10 @@ graduation_criteria:
   - "Gemini request/response/error/stream fixture manifest reviewed by stakeholders"
   - "OAuth2 access-token rotation/hot-reload strategy for credential_inject reviewed by stakeholders"
 stakeholders:
-  - # TODO: add relevant maintainer/domain-expert handles before merge
+  - shaneutt
+  - alexsnaps
+  - aslakknutsen
+  - szedan-rh
 ---
 
 # API Translation: Google Vertex AI (Gemini)
