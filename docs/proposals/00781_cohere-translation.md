@@ -15,7 +15,10 @@ authors:
 graduation_criteria:
   - "Cohere v2 Chat request/response/error/stream fixture manifest reviewed by stakeholders"
 stakeholders:
-  - # TODO: add relevant maintainer/domain-expert handles before merge
+  - shaneutt
+  - alexsnaps
+  - aslakknutsen
+  - szedan-rh
 ---
 
 # API Translation: Cohere
