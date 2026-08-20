@@ -19,7 +19,10 @@ authors:
 graduation_criteria:
   - "How? section with requirements and design"
 stakeholders:
-  - # TODO: add relevant maintainer/domain-expert handles before merge
+  - shaneutt
+  - alexsnaps
+  - aslakknutsen
+  - szedan-rh
 ---
 
 # API Translation
