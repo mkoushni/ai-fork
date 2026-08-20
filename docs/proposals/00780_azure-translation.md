@@ -16,7 +16,10 @@ graduation_criteria:
   - "credential_inject header-name/prefix generalization reviewed by its maintainers (shared filters/src code, not apis-crate-local)"
   - "Azure request/response/error/stream fixture manifest reviewed by stakeholders"
 stakeholders:
-  - # TODO: add relevant maintainer/domain-expert handles before merge
+  - shaneutt
+  - alexsnaps
+  - aslakknutsen
+  - szedan-rh
 ---
 
 # API Translation: Azure OpenAI
