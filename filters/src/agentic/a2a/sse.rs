@@ -65,6 +65,27 @@ pub(crate) enum SkipPhase {
     LineHasContent,
 }
 
+impl SkipPhase {
+    /// Encode this phase for `filter_metadata` persistence.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotSkipping => "not_skipping",
+            Self::LineEmptySoFar => "line_empty",
+            Self::LineHasContent => "line_has_content",
+        }
+    }
+
+    /// Decode a persisted metadata value. Missing or unknown strings
+    /// map to [`Self::NotSkipping`] so a restart resumes buffering.
+    pub(crate) fn from_metadata_str(s: Option<&str>) -> Self {
+        match s {
+            Some("line_empty") => Self::LineEmptySoFar,
+            Some("line_has_content") => Self::LineHasContent,
+            _ => Self::NotSkipping,
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // SseScanResult
 // -----------------------------------------------------------------------------
@@ -527,6 +548,32 @@ mod tests {
         assert_eq!(r2.dropped_events, 0, "no further drops once the boundary is found");
         assert_eq!(r2.payloads.len(), 1, "next event should be captured normally");
         assert_eq!(r2.payloads[0], b"ok");
+    }
+
+    #[test]
+    fn skip_phase_round_trips_through_metadata_strings() {
+        assert_eq!(SkipPhase::NotSkipping.as_str(), "not_skipping");
+        assert_eq!(SkipPhase::LineEmptySoFar.as_str(), "line_empty");
+        assert_eq!(SkipPhase::LineHasContent.as_str(), "line_has_content");
+
+        assert_eq!(
+            SkipPhase::from_metadata_str(Some("not_skipping")),
+            SkipPhase::NotSkipping
+        );
+        assert_eq!(
+            SkipPhase::from_metadata_str(Some("line_empty")),
+            SkipPhase::LineEmptySoFar
+        );
+        assert_eq!(
+            SkipPhase::from_metadata_str(Some("line_has_content")),
+            SkipPhase::LineHasContent
+        );
+        assert_eq!(SkipPhase::from_metadata_str(None), SkipPhase::NotSkipping);
+        assert_eq!(
+            SkipPhase::from_metadata_str(Some("unknown")),
+            SkipPhase::NotSkipping,
+            "unknown values should resume normal buffering"
+        );
     }
 
     #[test]

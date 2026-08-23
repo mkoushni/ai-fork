@@ -719,6 +719,30 @@ fn max_scratch_bytes_configurable_via_yaml() {
     assert_eq!(filter.name(), "token_count");
 }
 
+#[test]
+fn from_config_rejects_zero_max_body_bytes() {
+    let config: serde_yaml::Value = serde_yaml::from_str("provider: openai\nmax_body_bytes: 0").unwrap();
+    match TokenCountFilter::from_config(&config) {
+        Err(err) => assert!(
+            err.to_string().contains("max_body_bytes"),
+            "should reject zero max_body_bytes: {err}"
+        ),
+        Ok(_) => panic!("should reject zero max_body_bytes"),
+    }
+}
+
+#[test]
+fn from_config_rejects_zero_max_scratch_bytes() {
+    let config: serde_yaml::Value = serde_yaml::from_str("provider: openai\nmax_scratch_bytes: 0").unwrap();
+    match TokenCountFilter::from_config(&config) {
+        Err(err) => assert!(
+            err.to_string().contains("max_scratch_bytes"),
+            "should reject zero max_scratch_bytes: {err}"
+        ),
+        Ok(_) => panic!("should reject zero max_scratch_bytes"),
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Content-Type Helpers
 // -----------------------------------------------------------------------------

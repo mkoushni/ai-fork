@@ -30,7 +30,8 @@ use std::fmt::Write as _;
 use async_trait::async_trait;
 use bytes::Bytes;
 use praxis_filter::{
-    BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, parse_filter_config,
+    BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext,
+    builtins::http::payload_processing::config_validation::validate_max_body_bytes, parse_filter_config,
 };
 use serde::Deserialize;
 use tracing::{debug, trace};
@@ -112,12 +113,13 @@ struct TokenCountConfig {
     provider: ProviderKind,
 
     /// Maximum bytes to buffer for a non-streaming JSON response before
-    /// giving up on locating its usage field.
+    /// giving up on locating its usage field. Must be greater than 0.
     #[serde(default = "default_max_body_bytes")]
     max_body_bytes: usize,
 
     /// Maximum scratch bytes (buffered line + in-progress event data) for
-    /// the SSE scanner before an event is discarded as oversized.
+    /// the SSE scanner before an event is discarded as oversized. Must be
+    /// greater than 0.
     #[serde(default = "default_max_scratch_bytes")]
     max_scratch_bytes: usize,
 }
@@ -213,6 +215,10 @@ impl TokenCountFilter {
     /// Returns [`FilterError`] if the YAML config is invalid.
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
         let cfg: TokenCountConfig = parse_filter_config("token_count", config)?;
+        validate_max_body_bytes("token_count", cfg.max_body_bytes)?;
+        if cfg.max_scratch_bytes == 0 {
+            return Err("token_count: 'max_scratch_bytes' must be greater than 0".into());
+        }
 
         Ok(Box::new(Self {
             provider: cfg.provider,
@@ -554,7 +560,7 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    let skip = decode_skip_phase(ctx.filter_metadata.get(META_SSE_SKIP).map(String::as_str));
+    let skip = sse::SkipPhase::from_metadata_str(ctx.filter_metadata.get(META_SSE_SKIP).map(String::as_str));
 
     sse::SseScanState {
         line_buf,
@@ -563,15 +569,6 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         prev_cr,
         scratch_bytes,
         skip,
-    }
-}
-
-/// Inverse of the encoding written by [`save_sse_scan_state`].
-fn decode_skip_phase(value: Option<&str>) -> sse::SkipPhase {
-    match value {
-        Some("line_empty") => sse::SkipPhase::LineEmptySoFar,
-        Some("line_has_content") => sse::SkipPhase::LineHasContent,
-        _ => sse::SkipPhase::NotSkipping,
     }
 }
 
@@ -591,12 +588,8 @@ fn save_sse_scan_state(ctx: &mut HttpFilterContext<'_>, state: &sse::SseScanStat
     ctx.filter_metadata
         .insert(META_SSE_SCRATCH.to_owned(), state.scratch_bytes.to_string());
 
-    let skip = match state.skip {
-        sse::SkipPhase::NotSkipping => "not_skipping",
-        sse::SkipPhase::LineEmptySoFar => "line_empty",
-        sse::SkipPhase::LineHasContent => "line_has_content",
-    };
-    ctx.filter_metadata.insert(META_SSE_SKIP.to_owned(), skip.to_owned());
+    ctx.filter_metadata
+        .insert(META_SSE_SKIP.to_owned(), state.skip.as_str().to_owned());
 }
 
 // -----------------------------------------------------------------------------

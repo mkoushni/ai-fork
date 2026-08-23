@@ -925,11 +925,7 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    let skip = match ctx.filter_metadata.get("a2a.response.sse_skip").map(String::as_str) {
-        Some("line_empty") => sse::SkipPhase::LineEmptySoFar,
-        Some("line_has_content") => sse::SkipPhase::LineHasContent,
-        _ => sse::SkipPhase::NotSkipping,
-    };
+    let skip = sse::SkipPhase::from_metadata_str(ctx.filter_metadata.get("a2a.response.sse_skip").map(String::as_str));
 
     sse::SseScanState {
         line_buf,
@@ -959,13 +955,8 @@ fn save_sse_scan_state(ctx: &mut HttpFilterContext<'_>, state: &sse::SseScanStat
         state.scratch_bytes.to_string(),
     );
 
-    let skip = match state.skip {
-        sse::SkipPhase::NotSkipping => "not_skipping",
-        sse::SkipPhase::LineEmptySoFar => "line_empty",
-        sse::SkipPhase::LineHasContent => "line_has_content",
-    };
     ctx.filter_metadata
-        .insert("a2a.response.sse_skip".to_owned(), skip.to_owned());
+        .insert("a2a.response.sse_skip".to_owned(), state.skip.as_str().to_owned());
 }
 
 /// Hex-encodes raw bytes into a metadata value, or removes the key if empty.
