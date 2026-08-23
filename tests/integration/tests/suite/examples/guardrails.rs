@@ -95,10 +95,7 @@ fn nemo_guardrails_redact_rejects_with_403() {
         r#"{"model":"test","messages":[{"role":"user","content":"my ssn is 123-45-6789"}]}"#,
     );
 
-    assert_eq!(
-        status, 403,
-        "NeMo 'modified' must reject with 403"
-    );
+    assert_eq!(status, 403, "NeMo 'modified' must reject with 403");
     assert!(
         body.contains("pii masking"),
         "triggered rail name should appear in rejection body; got: {body}"
