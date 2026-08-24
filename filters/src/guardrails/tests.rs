@@ -38,7 +38,7 @@ fn as_rejection(action: praxis_filter::FilterAction) -> praxis_filter::Rejection
     .unwrap()
 }
 
-/// Build a NeMo guardrail filter backed by a mock that returns a
+/// Build a `NeMo` guardrail filter backed by a mock that returns a
 /// `"modified"` (PII redact) verdict. Returns the filter and the
 /// mock server (whose lifetime must be held for the duration of
 /// the test).
