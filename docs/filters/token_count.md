@@ -14,8 +14,8 @@ Supports both streaming (SSE) and non-streaming (JSON) responses across five pro
 | Field | Type | Required | Description |
 |-------|------|---------|-------------|
 | `provider` | `openai` \| `anthropic` \| `google` \| `bedrock` \| `bedrock_invoke_model` \| `azure` | yes | AI provider whose response format to parse. |
-| `max_body_bytes` | integer | no | Maximum bytes to buffer for a non-streaming JSON response before giving up on locating its usage field. Must be greater than 0. |
-| `max_scratch_bytes` | integer | no | Maximum scratch bytes (buffered line + in-progress event data) for the SSE scanner before an event is discarded as oversized. Must be greater than 0. |
+| `max_body_bytes` | integer | no | Maximum bytes to buffer for a non-streaming JSON response before giving up on locating its usage field. Must be greater than 0 and at most 64 MiB. |
+| `max_scratch_bytes` | integer | no | Maximum scratch bytes (buffered line + in-progress event data) for the SSE scanner before an event is discarded as oversized. Must be greater than 0 and at most 64 MiB. |
 
 ## Example
 

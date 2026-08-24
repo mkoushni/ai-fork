@@ -30,7 +30,7 @@ use std::fmt::Write as _;
 use async_trait::async_trait;
 use bytes::Bytes;
 use praxis_filter::{
-    BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext,
+    BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, body::MAX_JSON_BODY_BYTES,
     builtins::http::payload_processing::config_validation::validate_max_body_bytes, parse_filter_config,
 };
 use serde::Deserialize;
@@ -112,13 +112,14 @@ struct TokenCountConfig {
     provider: ProviderKind,
 
     /// Maximum bytes to buffer for a non-streaming JSON response before
-    /// giving up on locating its usage field. Must be greater than 0.
+    /// giving up on locating its usage field. Must be greater than 0 and
+    /// at most 64 MiB.
     #[serde(default = "default_max_body_bytes")]
     max_body_bytes: usize,
 
     /// Maximum scratch bytes (buffered line + in-progress event data) for
     /// the SSE scanner before an event is discarded as oversized. Must be
-    /// greater than 0.
+    /// greater than 0 and at most 64 MiB.
     #[serde(default = "default_max_scratch_bytes")]
     max_scratch_bytes: usize,
 }
@@ -215,9 +216,7 @@ impl TokenCountFilter {
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
         let cfg: TokenCountConfig = parse_filter_config("token_count", config)?;
         validate_max_body_bytes("token_count", cfg.max_body_bytes)?;
-        if cfg.max_scratch_bytes == 0 {
-            return Err("token_count: 'max_scratch_bytes' must be greater than 0".into());
-        }
+        validate_max_scratch_bytes(cfg.max_scratch_bytes)?;
 
         Ok(Box::new(Self {
             provider: cfg.provider,
@@ -225,6 +224,18 @@ impl TokenCountFilter {
             max_scratch_bytes: cfg.max_scratch_bytes,
         }))
     }
+}
+
+/// Reject a `max_scratch_bytes` that is zero or above the shared 64 MiB
+/// capture ceiling used by other payload-processing filters.
+fn validate_max_scratch_bytes(value: usize) -> Result<(), FilterError> {
+    if value == 0 {
+        return Err("token_count: 'max_scratch_bytes' must be greater than 0".into());
+    }
+    if value > MAX_JSON_BODY_BYTES {
+        return Err(format!("token_count: max_scratch_bytes ({value}) exceeds maximum ({MAX_JSON_BODY_BYTES})").into());
+    }
+    Ok(())
 }
 
 #[async_trait]
