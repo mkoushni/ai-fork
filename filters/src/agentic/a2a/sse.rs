@@ -44,6 +44,10 @@ pub(crate) struct SseScanState {
     /// Progress discarding an event that exceeded `max_scratch_bytes`,
     /// if any. See [`SkipPhase`].
     pub skip: SkipPhase,
+
+    /// Most recently completed stream action. Distinguishes "drop then
+    /// recovered usage" from "usage then dropped terminal event."
+    pub tail: ScanTail,
 }
 
 /// Progress discarding an oversized event's bytes without buffering them.
@@ -82,6 +86,37 @@ impl SkipPhase {
             Some("line_empty") => Self::LineEmptySoFar,
             Some("line_has_content") => Self::LineHasContent,
             _ => Self::NotSkipping,
+        }
+    }
+}
+
+/// Whether the last completed SSE action dispatched a payload or dropped
+/// an oversized event. Persisted across chunks so finalize can tell a
+/// recovered terminal usage event from a dropped one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanTail {
+    /// Last completed action dispatched a `data:` payload.
+    #[default]
+    Payload,
+    /// Last completed action discarded an oversized event.
+    Dropped,
+}
+
+impl ScanTail {
+    /// Encode this tail for `filter_metadata` persistence.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Payload => "payload",
+            Self::Dropped => "dropped",
+        }
+    }
+
+    /// Decode a persisted metadata value. Missing or unknown strings
+    /// map to [`Self::Payload`].
+    pub(crate) fn from_metadata_str(s: Option<&str>) -> Self {
+        match s {
+            Some("dropped") => Self::Dropped,
+            _ => Self::Payload,
         }
     }
 }
@@ -134,7 +169,11 @@ pub(crate) fn scan_sse_chunk(state: &mut SseScanState, chunk: &[u8], max_scratch
         match state.skip {
             SkipPhase::NotSkipping => {
                 if is_newline {
+                    let before = payloads.len();
                     process_line(&state.line_buf, &mut state.data_buf, &mut state.has_data, &mut payloads);
+                    if payloads.len() > before {
+                        state.tail = ScanTail::Payload;
+                    }
                     state.line_buf.clear();
                 } else {
                     state.line_buf.push(b);
@@ -181,6 +220,7 @@ pub(crate) fn scan_sse_chunk(state: &mut SseScanState, chunk: &[u8], max_scratch
                     SkipPhase::LineHasContent
                 };
                 dropped_events += 1;
+                state.tail = ScanTail::Dropped;
             }
         }
 
@@ -199,6 +239,8 @@ pub(crate) fn scan_sse_chunk(state: &mut SseScanState, chunk: &[u8], max_scratch
 /// closing the connection, so the scanner must dispatch buffered state on
 /// `end_of_stream` rather than waiting for another `\n\n` boundary.
 pub(crate) fn flush_sse_state(state: &mut SseScanState, payloads: &mut Vec<Vec<u8>>) {
+    let before = payloads.len();
+
     if !state.line_buf.is_empty() {
         process_line(&state.line_buf, &mut state.data_buf, &mut state.has_data, payloads);
         state.line_buf.clear();
@@ -207,6 +249,10 @@ pub(crate) fn flush_sse_state(state: &mut SseScanState, payloads: &mut Vec<Vec<u
     if state.has_data {
         payloads.push(std::mem::take(&mut state.data_buf));
         state.has_data = false;
+    }
+
+    if payloads.len() > before {
+        state.tail = ScanTail::Payload;
     }
 
     state.scratch_bytes = 0;
@@ -517,6 +563,10 @@ mod tests {
         );
         assert_eq!(result.payloads.len(), 1, "scanning should resume for the next event");
         assert_eq!(result.payloads[0], b"ok");
+        assert!(
+            state.tail != ScanTail::Dropped,
+            "a payload after the drop means the tail is recovered usage, not a drop"
+        );
     }
 
     #[test]
@@ -534,6 +584,10 @@ mod tests {
             "first completed event should still be returned"
         );
         assert_eq!(result.payloads[0], b"ok");
+        assert!(
+            state.tail == ScanTail::Dropped,
+            "dropping the last event must leave dropped_tail set"
+        );
     }
 
     #[test]
@@ -543,11 +597,16 @@ mod tests {
         let r1 = scan_sse_chunk(&mut state, b"data: aaaaaaaaaaaaaaaa", 10);
         assert_eq!(r1.dropped_events, 1, "overflow should be detected mid-line");
         assert!(r1.payloads.is_empty());
+        assert_eq!(state.tail, ScanTail::Dropped, "mid-line overflow is a dropped tail");
 
         let r2 = scan_sse_chunk(&mut state, b"aaaaaaaa\n\ndata: ok\n\n", 10);
         assert_eq!(r2.dropped_events, 0, "no further drops once the boundary is found");
         assert_eq!(r2.payloads.len(), 1, "next event should be captured normally");
         assert_eq!(r2.payloads[0], b"ok");
+        assert!(
+            state.tail != ScanTail::Dropped,
+            "dispatching a later payload clears the dropped tail"
+        );
     }
 
     #[test]

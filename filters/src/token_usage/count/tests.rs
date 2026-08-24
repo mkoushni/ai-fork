@@ -541,7 +541,7 @@ async fn sse_final_event_without_trailing_blank_line() {
 /// Regression test for #674: an oversized event must not disable
 /// extraction for the rest of the stream. The scanner recovers at the
 /// next event boundary, so a terminal usage event arriving afterward is
-/// still captured.
+/// still captured and treated as authoritative (no overflow status).
 #[tokio::test]
 async fn sse_oversized_event_recovers_and_captures_terminal_usage() {
     let mut events = b"data: ".to_vec();
@@ -551,15 +551,29 @@ async fn sse_oversized_event_recovers_and_captures_terminal_usage() {
         b"data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}\n\n",
     );
 
-    let (input, output, total) = run_sse_extraction(ProviderKind::OpenAi, &events).await;
+    let filter = make_filter(ProviderKind::OpenAi);
+    let req = crate::test_utils::make_request(http::Method::POST, "/v1/chat/completions");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    let mut resp = make_response_with_content_type("text/event-stream");
+    ctx.response_header = Some(&mut resp);
+    drop(filter.on_response(&mut ctx).await.unwrap());
+    ctx.response_header = None;
+
+    let mut body = Some(Bytes::from(events));
+    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
 
     assert_eq!(
-        input.as_deref(),
+        ctx.get_metadata("token.input"),
         Some("10"),
         "terminal usage should be captured after the oversized event is discarded"
     );
-    assert_eq!(output.as_deref(), Some("20"));
-    assert_eq!(total.as_deref(), Some("30"));
+    assert_eq!(ctx.get_metadata("token.output"), Some("20"));
+    assert_eq!(ctx.get_metadata("token.total"), Some("30"));
+    assert!(
+        ctx.get_metadata("token.status").is_none(),
+        "recovered terminal usage after a dropped content event is authoritative"
+    );
 }
 
 #[tokio::test]
@@ -593,6 +607,11 @@ async fn sse_overflow_does_not_finalize_mid_stream() {
     assert_eq!(ctx.get_metadata("token.input"), Some("10"));
     assert_eq!(ctx.get_metadata("token.output"), Some("20"));
     assert_eq!(ctx.get_metadata("token.total"), Some("30"));
+    assert_eq!(
+        ctx.get_metadata("token.status"),
+        Some("overflow"),
+        "a drop after captured usage means later events (possibly a usage correction) were lost"
+    );
     assert_no_working_metadata(&ctx);
 }
 
@@ -619,6 +638,41 @@ async fn sse_overflow_with_no_usage_sets_overflow_status() {
         ctx.get_metadata("token.status"),
         Some("overflow"),
         "billing consumers must not mistake this for zero usage"
+    );
+}
+
+/// Anthropic/Bedrock split usage across events. If partial counts were
+/// stored and the terminal usage event itself overflows, emit the
+/// partials *and* `token.status = overflow` so they are not treated as
+/// a complete capture.
+#[tokio::test]
+async fn sse_partial_then_oversized_terminal_event_sets_overflow_status() {
+    let mut filter = make_filter(ProviderKind::Anthropic);
+    filter.max_scratch_bytes = 256;
+    let req = crate::test_utils::make_request(http::Method::POST, "/v1/messages");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut resp = make_response_with_content_type("text/event-stream");
+    ctx.response_header = Some(&mut resp);
+    drop(filter.on_response(&mut ctx).await.unwrap());
+    ctx.response_header = None;
+
+    let mut events = b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25}}}\n\n".to_vec();
+    events.extend_from_slice(b"data: ");
+    events.extend(std::iter::repeat_n(b'x', 257));
+    events.extend_from_slice(b"\n\n");
+    let mut body = Some(Bytes::from(events));
+    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+
+    assert_eq!(ctx.get_metadata("token.input"), Some("25"), "partial input kept");
+    assert_eq!(
+        ctx.get_metadata("token.output"),
+        Some("0"),
+        "terminal output was dropped"
+    );
+    assert_eq!(
+        ctx.get_metadata("token.status"),
+        Some("overflow"),
+        "partial maxima are not a complete capture when the terminal event overflowed"
     );
 }
 

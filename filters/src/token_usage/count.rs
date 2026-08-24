@@ -89,11 +89,10 @@ const META_SSE_SCRATCH: &str = "token_count.sse_scratch_bytes";
 /// Metadata key for the SSE scanner's oversized-event skip phase.
 const META_SSE_SKIP: &str = "token_count.sse_skip";
 
-/// Metadata key recording that at least one oversized SSE event was
-/// discarded during this stream. Used by [`finalize_streaming_counts`]
-/// to distinguish "no usage events at all" from "usage may have been in
-/// a discarded event."
-const META_SSE_DROPPED: &str = "token_count.sse_dropped";
+/// Metadata key recording that the most recent SSE stream action was
+/// discarding an oversized event. Used by [`finalize_streaming_counts`]
+/// to mark overflow when the terminal usage event itself was dropped.
+const META_SSE_DROPPED_TAIL: &str = "token_count.sse_dropped_tail";
 
 /// Bedrock `InvokeModel` response header carrying the input token count.
 const HEADER_BEDROCK_INPUT: &str = "x-amzn-bedrock-input-token-count";
@@ -426,8 +425,6 @@ fn handle_sse_body(
                 dropped_events = result.dropped_events,
                 "SSE event exceeded scratch limit, discarding and resuming at next event boundary"
             );
-            ctx.filter_metadata
-                .insert(META_SSE_DROPPED.to_owned(), "true".to_owned());
         }
 
         save_sse_scan_state(ctx, &state);
@@ -441,7 +438,7 @@ fn handle_sse_body(
             process_sse_payload(ctx, payload, provider);
         }
 
-        finalize_streaming_counts(ctx);
+        finalize_streaming_counts(ctx, state.tail == sse::ScanTail::Dropped);
         clear_all_metadata(ctx);
     }
 }
@@ -503,17 +500,24 @@ fn merge_accumulated_count(ctx: &mut HttpFilterContext<'_>, key: &str, value: u6
 
 /// Write accumulated streaming counts to the well-known metadata keys.
 ///
-/// If no counts were ever accumulated but an oversized event was
-/// discarded during the stream, the terminal usage event itself may
-/// have been the one dropped — an explicit overflow status is recorded
-/// so this is distinguishable from a genuine zero-usage response.
-fn finalize_streaming_counts(ctx: &mut HttpFilterContext<'_>) {
+/// If the stream ended after discarding an oversized event — including
+/// the case where Anthropic/Bedrock partial counts were already stored
+/// and the terminal usage event itself overflowed — an explicit overflow
+/// status is recorded so this is distinguishable from a complete capture.
+/// Recovered usage that arrived *after* an oversized event is treated as
+/// authoritative and does not set overflow.
+fn finalize_streaming_counts(ctx: &mut HttpFilterContext<'_>, dropped_tail: bool) {
     let has_accumulated = ctx.filter_metadata.contains_key(META_INPUT) || ctx.filter_metadata.contains_key(META_OUTPUT);
+
+    if dropped_tail {
+        set_token_status_overflow(ctx);
+        debug!(
+            has_accumulated,
+            "stream ended after an oversized SSE event; marking status overflow"
+        );
+    }
+
     if !has_accumulated {
-        if ctx.filter_metadata.contains_key(META_SSE_DROPPED) {
-            set_token_status_overflow(ctx);
-            debug!("stream had oversized events discarded and produced no usage; marking status overflow");
-        }
         return;
     }
 
@@ -561,6 +565,7 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         .unwrap_or(0);
 
     let skip = sse::SkipPhase::from_metadata_str(ctx.filter_metadata.get(META_SSE_SKIP).map(String::as_str));
+    let tail = sse::ScanTail::from_metadata_str(ctx.filter_metadata.get(META_SSE_DROPPED_TAIL).map(String::as_str));
 
     sse::SseScanState {
         line_buf,
@@ -569,6 +574,7 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         prev_cr,
         scratch_bytes,
         skip,
+        tail,
     }
 }
 
@@ -590,6 +596,8 @@ fn save_sse_scan_state(ctx: &mut HttpFilterContext<'_>, state: &sse::SseScanStat
 
     ctx.filter_metadata
         .insert(META_SSE_SKIP.to_owned(), state.skip.as_str().to_owned());
+    ctx.filter_metadata
+        .insert(META_SSE_DROPPED_TAIL.to_owned(), state.tail.as_str().to_owned());
 }
 
 // -----------------------------------------------------------------------------

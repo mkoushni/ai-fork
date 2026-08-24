@@ -895,7 +895,7 @@ fn try_extract_task_from_sse_payload(
 /// Reconstructs scanner state from hex-encoded `filter_metadata` keys.
 /// Metadata bypasses the 256-byte dynamic-value helper because the
 /// scanner buffers raw SSE line/data bytes that can exceed that limit.
-#[expect(clippy::too_many_lines, reason = "36 lines; sequential per-field metadata reads")]
+#[expect(clippy::too_many_lines, reason = "sequential per-field metadata reads")]
 fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
     let line_buf = ctx
         .filter_metadata
@@ -926,6 +926,11 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         .unwrap_or(0);
 
     let skip = sse::SkipPhase::from_metadata_str(ctx.filter_metadata.get("a2a.response.sse_skip").map(String::as_str));
+    let tail = sse::ScanTail::from_metadata_str(
+        ctx.filter_metadata
+            .get("a2a.response.sse_dropped_tail")
+            .map(String::as_str),
+    );
 
     sse::SseScanState {
         line_buf,
@@ -934,6 +939,7 @@ fn load_sse_scan_state(ctx: &HttpFilterContext<'_>) -> sse::SseScanState {
         prev_cr,
         scratch_bytes,
         skip,
+        tail,
     }
 }
 
@@ -957,6 +963,10 @@ fn save_sse_scan_state(ctx: &mut HttpFilterContext<'_>, state: &sse::SseScanStat
 
     ctx.filter_metadata
         .insert("a2a.response.sse_skip".to_owned(), state.skip.as_str().to_owned());
+    ctx.filter_metadata.insert(
+        "a2a.response.sse_dropped_tail".to_owned(),
+        state.tail.as_str().to_owned(),
+    );
 }
 
 /// Hex-encodes raw bytes into a metadata value, or removes the key if empty.
