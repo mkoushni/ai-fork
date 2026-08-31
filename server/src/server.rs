@@ -144,7 +144,11 @@ fn build_server_state(
 
     let health_shutdown = Arc::new(Mutex::new(CancellationToken::new()));
     spawn_health_check_tasks(config, Arc::clone(health_registry), &health_shutdown);
-    spawn_circuit_eviction_if_configured(config, &subrequest_client);
+    // Dedicated token: `health_shutdown` is cancelled on every reload, but
+    // circuit-breaker config is restart-required and eviction must keep running.
+    let circuit_eviction_shutdown = CancellationToken::new();
+    let _circuit_eviction =
+        spawn_circuit_eviction_if_configured(config, &subrequest_client, &circuit_eviction_shutdown);
 
     ServerState {
         pipelines: Arc::new(pipelines),

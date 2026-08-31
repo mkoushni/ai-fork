@@ -3,13 +3,14 @@
 
 //! Shared sub-request client construction from runtime configuration.
 
-use std::time::Duration;
+use std::{thread::JoinHandle, time::Duration};
 
 use praxis_core::{
     circuit::CircuitBreakerConfig,
     config::Config,
     subrequest::{SubRequestClient, SubRequestConnector, SubRequestConnectorOptions},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 // -----------------------------------------------------------------------------
@@ -62,30 +63,58 @@ pub fn create_subrequest_client(config: &Config) -> SubRequestClient {
 /// Spawn idle-circuit eviction when `runtime.subrequest_circuit_breaker` is set.
 ///
 /// Interval and idle threshold match the Praxis server so AI and core
-/// bound circuit state the same way. No-op when the breaker is absent.
+/// bound circuit state the same way. Returns `None` when the breaker is
+/// absent. The loop exits when `shutdown` is cancelled so the thread can
+/// participate in graceful process teardown; Pingora may still reap the
+/// process first, matching health-check background tasks.
 #[expect(clippy::expect_used, reason = "fatal if the eviction runtime cannot start")]
-pub(crate) fn spawn_circuit_eviction_if_configured(config: &Config, client: &SubRequestClient) {
-    if config.runtime.subrequest_circuit_breaker.is_none() {
-        return;
+pub(crate) fn spawn_circuit_eviction_if_configured(
+    config: &Config,
+    client: &SubRequestClient,
+    shutdown: &CancellationToken,
+) -> Option<JoinHandle<()>> {
+    if config.runtime.subrequest_circuit_breaker.is_some() {
+        let client = client.clone();
+        let shutdown = shutdown.clone();
+        return Some(std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("circuit breaker eviction runtime");
+            rt.block_on(run_circuit_eviction_loop(
+                client,
+                shutdown,
+                CIRCUIT_EVICTION_INTERVAL,
+                CIRCUIT_IDLE_THRESHOLD,
+            ));
+        }));
     }
-    let client = client.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("circuit breaker eviction runtime");
-        rt.block_on(async move {
-            let mut interval = tokio::time::interval(CIRCUIT_EVICTION_INTERVAL);
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                let evicted = client.evict_idle_circuits(CIRCUIT_IDLE_THRESHOLD);
+    None
+}
+
+/// Tick idle-circuit eviction until `shutdown` is cancelled.
+async fn run_circuit_eviction_loop(
+    client: SubRequestClient,
+    shutdown: CancellationToken,
+    period: Duration,
+    idle_threshold: Duration,
+) {
+    let mut interval = tokio::time::interval(period);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let evicted = client.evict_idle_circuits(idle_threshold);
                 if evicted > 0 {
                     debug!(evicted, "circuit breaker: evicted idle entries");
                 }
             }
-        });
-    });
+            () = shutdown.cancelled() => {
+                debug!("circuit breaker eviction shutting down");
+                return;
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -205,6 +234,71 @@ runtime:
             matches!(second, Err(SubRequestError::Connect(_))),
             "absent breaker must not fail-fast as CircuitOpen; got {second:?}"
         );
+    }
+
+    #[test]
+    fn eviction_spawn_is_noop_when_breaker_absent() {
+        let config = minimal_config("");
+        let client = create_subrequest_client(&config);
+        let shutdown = CancellationToken::new();
+        assert!(
+            spawn_circuit_eviction_if_configured(&config, &client, &shutdown).is_none(),
+            "absent breaker must not spawn an eviction thread"
+        );
+    }
+
+    #[test]
+    fn eviction_spawn_exits_when_shutdown_cancelled() {
+        let config = minimal_config(
+            "
+runtime:
+  subrequest_circuit_breaker:
+    consecutive_failures: 5
+    recovery_window_secs: 30
+",
+        );
+        let client = create_subrequest_client(&config);
+        let shutdown = CancellationToken::new();
+        let handle = spawn_circuit_eviction_if_configured(&config, &client, &shutdown)
+            .expect("configured breaker should spawn eviction");
+        shutdown.cancel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            handle.join().expect("eviction thread should not panic");
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("eviction thread should exit after shutdown cancel");
+    }
+
+    #[tokio::test]
+    async fn eviction_loop_ticks_then_exits_on_shutdown() {
+        let client = create_subrequest_client(&minimal_config(
+            "
+runtime:
+  subrequest_circuit_breaker:
+    consecutive_failures: 5
+    recovery_window_secs: 30
+",
+        ));
+        let shutdown = CancellationToken::new();
+        let loop_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move {
+            run_circuit_eviction_loop(
+                client,
+                loop_shutdown,
+                Duration::from_millis(10),
+                Duration::from_millis(1),
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("eviction loop should finish after shutdown")
+            .expect("eviction loop should not panic");
     }
 
     // -------------------------------------------------------------------------
