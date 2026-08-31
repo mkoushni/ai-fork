@@ -265,7 +265,7 @@ runtime:
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             handle.join().expect("eviction thread should not panic");
-            let _ = done_tx.send(());
+            done_tx.send(()).expect("join notifier should still have a receiver");
         });
         done_rx
             .recv_timeout(Duration::from_secs(2))
