@@ -330,7 +330,7 @@ async fn compact_preserves_resolved_file_url_as_file_data() {
         &origin,
     ));
     let inference =
-        compact_follow_up_and_capture(&yaml, "compact_file_url", None, &file_url_follow_up_body(file_url_port)).await;
+        compact_follow_up_and_capture(&yaml, "compact_file_url", None, &file_url_follow_up_body(file_url_port));
 
     assert_no_unresolved_file_fields(&inference);
     let current = &inference["input"][1];
@@ -355,8 +355,7 @@ async fn compact_preserves_extracted_file_id_as_input_text() {
     let files_api_port = start_files_api_stub();
     let yaml = std::fs::read_to_string(example_config_path("openai/responses/compact.yaml"))
         .expect("example config should exist");
-    let inference =
-        compact_follow_up_and_capture(&yaml, "compact_file_id", Some(files_api_port), FILE_ID_FOLLOW_UP).await;
+    let inference = compact_follow_up_and_capture(&yaml, "compact_file_id", Some(files_api_port), FILE_ID_FOLLOW_UP);
 
     assert_no_unresolved_file_fields(&inference);
     let current = &inference["input"][1];
@@ -389,8 +388,7 @@ async fn compact_example_extracts_file_url_and_does_not_restore_it() {
         "compact_example_file_url",
         None,
         &file_url_follow_up_body(file_url_port),
-    )
-    .await;
+    );
 
     assert_no_unresolved_file_fields(&inference);
     let current = &inference["input"][1];
@@ -440,7 +438,7 @@ fn assert_no_unresolved_file_fields(inference: &serde_json::Value) {
 
 /// Store the first compact turn, then send `follow_up` against a sequenced
 /// backend and return the captured inference request JSON.
-async fn compact_follow_up_and_capture(
+fn compact_follow_up_and_capture(
     yaml: &str,
     db_name: &str,
     files_api_port: Option<u16>,
