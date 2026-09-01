@@ -378,8 +378,6 @@ fn replace_messages_keeps_each_list_current_turn_independently() {
     );
 }
 
-/// Compaction must keep the rewritten current-turn tail from `messages`,
-/// not rebuild it from immutable `state.input` (issue #661).
 #[test]
 fn compaction_preserves_resolved_file_data_instead_of_file_url() {
     const FILE_URL: &str = "https://files.internal/secret.bin";
@@ -403,7 +401,6 @@ fn compaction_preserves_resolved_file_data_instead_of_file_url() {
         "role": "user",
         "content": [{"type": "input_file", "file_data": "SGVsbG8="}]
     });
-    // Same fields `sync_state_with_budget` updates — not `state.input`.
     state.request_body["input"] = json!([resolved_item.clone()]);
     let tail = state.messages.len() - state.input.len();
     state.messages[tail] = resolved_item.clone();

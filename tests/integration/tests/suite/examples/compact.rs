@@ -317,9 +317,6 @@ async fn compact_verifies_summarization_call_and_compacted_state() {
     );
 }
 
-/// Store a long first turn, then compact a follow-up whose current input
-/// is a `file_url`. The inference body must keep the resolved `file_data`
-/// and must not restore the original URL (issue #661).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_preserves_resolved_file_url_as_file_data() {
     let file_url_port = start_file_url_stub();
@@ -347,9 +344,6 @@ async fn compact_preserves_resolved_file_url_as_file_data() {
     );
 }
 
-/// Store a long first turn, then compact a follow-up whose current input
-/// is a `file_id`. After resolve + extract, the inference body must be
-/// `input_text` and must not restore `file_id` or `input_file`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_preserves_extracted_file_id_as_input_text() {
     let files_api_port = start_files_api_stub();
@@ -372,8 +366,6 @@ async fn compact_preserves_extracted_file_id_as_input_text() {
     );
 }
 
-/// Store a long first turn, then compact a follow-up whose current input
-/// is a `file_url` through the example pipeline (resolve + extract).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_example_extracts_file_url_and_does_not_restore_it() {
     let file_url_port = start_file_url_stub();
