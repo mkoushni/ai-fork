@@ -8,7 +8,9 @@
 //! this filter summarizes the conversation history via a sub-request
 //! to an inference backend, replacing it with a single compaction
 //! item. Runs after `rehydrate` (which populates messages and
-//! previous usage) and after `openai_tool_parse`.
+//! previous usage) and after `openai_tool_parse`. Place
+//! `openai_file_resolve` and `openai_doc_extract` before compact so
+//! rewritten current-turn content is what compaction preserves.
 //!
 //! # Scope
 //!
@@ -28,6 +30,7 @@ pub(super) mod config;
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
+    clippy::too_many_lines,
     reason = "tests"
 )]
 mod tests;

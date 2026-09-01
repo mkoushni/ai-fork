@@ -71,7 +71,7 @@ before sending requests.
 | [prompts-routing.yaml](configs/openai/prompts/prompts-routing.yaml) | Routes OpenAI Prompts API requests to a dedicated Prompts API backend |
 | [agentic-loop-fixture.yaml](configs/openai/responses/agentic-loop-fixture.yaml) | Minimal agentic loop pipeline for inference fixture replay |
 | [agentic-loop.yaml](configs/openai/responses/agentic-loop.yaml) | Demonstrates the openai_agentic_loop filter with iterative_request_router for step-based model-tool-model looping in the Responses API |
-| [compact.yaml](configs/openai/responses/compact.yaml) | Demonstrates the compaction flow: store a response, rehydrate it on the next turn, and count tokens to check if compaction is needed |
+| [compact.yaml](configs/openai/responses/compact.yaml) | Demonstrates compaction after rehydrate, file resolve, and document extract so rewritten current-turn content survives history replacement |
 | [doc-extract.yaml](configs/openai/responses/doc-extract.yaml) | Converts `input_file` content parts to `input_text` for inference backends that do not natively support `input_file` (e.g. vLLM, llm-d) |
 | [file-resolve.yaml](configs/openai/responses/file-resolve.yaml) | Resolves `file_id` and `file_url` references in Responses API input by fetching file metadata and content, then inlining base64 content as `file_data` or `image_url` before forwarding |
 | [file-search-callout.yaml](configs/openai/responses/file-search-callout.yaml) | Demonstrates the `openai_file_search_callout` filter configuration |

@@ -350,6 +350,34 @@ fn replace_messages_preserves_current_input() {
     );
 }
 
+#[test]
+fn replace_messages_keeps_each_list_current_turn_independently() {
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": [{"type": "message", "role": "user", "content": "from-input"}]
+    }));
+    state.messages = vec![
+        json!({"role": "user", "content": "hist-a"}),
+        json!({"role": "user", "content": "from-messages"}),
+    ];
+    state.persisted_messages = vec![
+        json!({"role": "user", "content": "hist-b1"}),
+        json!({"role": "user", "content": "hist-b2"}),
+        json!({"role": "user", "content": "from-persisted"}),
+    ];
+
+    replace_messages(&mut state, build_compaction_item("c1", "sum"));
+
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages[1]["content"], "from-messages");
+    assert_eq!(state.persisted_messages.len(), 2);
+    assert_eq!(state.persisted_messages[1]["content"], "from-persisted");
+    assert_eq!(
+        state.input[0]["content"], "from-input",
+        "state.input must not be used to rebuild the current turn"
+    );
+}
+
 /// Compaction must keep the rewritten current-turn tail from `messages`,
 /// not rebuild it from immutable `state.input` (issue #661).
 #[test]
