@@ -569,7 +569,12 @@ fn is_blocked_mcp_header(name: &http::HeaderName) -> bool {
         return true;
     }
     let s = name.as_str();
-    s.starts_with("x-forwarded-") || s.starts_with("x-praxis-") || s.starts_with("x-mcp-") || s.starts_with("x-a2a-")
+    s == "keep-alive"
+        || s == "proxy-connection"
+        || s.starts_with("x-forwarded-")
+        || s.starts_with("x-praxis-")
+        || s.starts_with("x-mcp-")
+        || s.starts_with("x-a2a-")
 }
 
 /// Hostnames that resolve to loopback.
