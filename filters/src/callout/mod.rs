@@ -29,6 +29,7 @@ use config::{FailureModeConfig, HttpCalloutConfig, Phase, expand_env_vars, valid
 use extract::{BodyShaper, CompiledExtraction};
 use http::HeaderMap;
 use pingora_core::upstreams::peer::HttpPeer;
+use praxis_ai_apis::http_hop::{connection_nominates_header, is_hop_by_hop};
 use praxis_core::{
     circuit::CircuitBreakerConfig as CoreCircuitBreakerConfig,
     connectivity::is_private_ip,
@@ -51,18 +52,6 @@ const FILTER_NAME: &str = "http_callout";
 
 /// Maximum allowed value for `max_body_bytes` (100 MiB).
 const MAX_BODY_BYTES: usize = 104_857_600; // 100 MiB
-
-/// Hop-by-hop and sensitive headers that must never be blindly
-/// forwarded from the client onto the callout request.
-const DISALLOWED_FORWARD_HEADERS: &[http::HeaderName] = &[
-    http::header::HOST,
-    http::header::CONTENT_LENGTH,
-    http::header::TRANSFER_ENCODING,
-    http::header::CONNECTION,
-    http::header::UPGRADE,
-    http::header::PROXY_AUTHORIZATION,
-    http::header::TRAILER,
-];
 
 // -----------------------------------------------------------------------------
 // HttpCalloutFilter
@@ -212,7 +201,7 @@ impl HttpCalloutFilter {
 
         // Forward allowed client headers, skipping hop-by-hop/sensitive ones.
         for name in &self.forward_headers {
-            if DISALLOWED_FORWARD_HEADERS.contains(name) {
+            if is_disallowed_forward_header(name) || connection_nominates_header(&ctx.request.headers, name) {
                 continue;
             }
             if let Some(value) = ctx.request.headers.get(name) {
@@ -469,13 +458,13 @@ fn parse_header_names(names: &[String], context: &str) -> Result<Vec<http::Heade
 
 /// Warn about configured forward headers that will never be forwarded.
 ///
-/// Hop-by-hop and sensitive headers in [`DISALLOWED_FORWARD_HEADERS`] are
-/// silently skipped at request time. Surfacing them at config time tells
-/// the operator their entry is a no-op instead of leaving them to wonder
-/// why the header never reaches the callout target.
+/// Hop-by-hop and sensitive headers are silently skipped at request time.
+/// Surfacing them at config time tells the operator their entry is a no-op
+/// instead of leaving them to wonder why the header never reaches the
+/// callout target.
 fn warn_on_disallowed_forward_headers(forward_headers: &[http::HeaderName]) {
     for name in forward_headers {
-        if DISALLOWED_FORWARD_HEADERS.contains(name) {
+        if is_disallowed_forward_header(name) {
             warn!(
                 header = %name,
                 "http_callout: forward_header '{name}' is a hop-by-hop or sensitive header \
@@ -483,6 +472,12 @@ fn warn_on_disallowed_forward_headers(forward_headers: &[http::HeaderName]) {
             );
         }
     }
+}
+
+/// Hop-by-hop names plus `Host` and `Content-Length`, which must not be
+/// copied from the client onto a newly constructed callout request.
+fn is_disallowed_forward_header(name: &http::HeaderName) -> bool {
+    *name == http::header::HOST || *name == http::header::CONTENT_LENGTH || is_hop_by_hop(name.as_str())
 }
 
 /// Compile `JSONPath` extraction rules from config.
