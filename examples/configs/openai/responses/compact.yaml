@@ -15,11 +15,6 @@
 # authentication and authorization boundary before enabling the
 # required allow_pre_security_callout acknowledgement below.
 #
-# Security: StreamBuffer body callouts run before this listener's
-# header-phase filters. Deploy this example behind an outer
-# authentication and authorization boundary before enabling the
-# required allow_pre_security_callout acknowledgement below.
-#
 # Usage:
 #   cargo run -p praxis-ai-proxy -- -c examples/configs/openai/responses/compact.yaml
 #
