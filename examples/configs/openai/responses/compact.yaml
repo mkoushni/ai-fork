@@ -15,6 +15,11 @@
 # authentication and authorization boundary before enabling the
 # required allow_pre_security_callout acknowledgement below.
 #
+# Security: StreamBuffer body callouts run before this listener's
+# header-phase filters. Deploy this example behind an outer
+# authentication and authorization boundary before enabling the
+# required allow_pre_security_callout acknowledgement below.
+#
 # Usage:
 #   cargo run -p praxis-ai-proxy -- -c examples/configs/openai/responses/compact.yaml
 #
@@ -82,6 +87,7 @@ filter_chains:
         on_unsupported: continue
 
       - filter: openai_responses_compact
+        allow_pre_security_callout: true
         inference_url: "http://localhost:11434/v1/chat/completions"
         default_model: llama3.2:1b
         timeout_ms: 60000
