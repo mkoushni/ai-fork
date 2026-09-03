@@ -25,11 +25,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use config::{FailureModeConfig, HttpCalloutConfig, Phase, expand_env_vars, validate_callout_url};
+use config::{HttpCalloutConfig, Phase, expand_env_vars, validate_callout_url};
 use extract::{BodyShaper, CompiledExtraction};
 use http::HeaderMap;
 use pingora_core::upstreams::peer::HttpPeer;
-use praxis_ai_apis::http_hop::{connection_nominates_header, is_hop_by_hop};
+use praxis_ai_apis::{
+    callout_policy::{OnFailure, validate_status_on_error},
+    http_hop::{connection_nominates_header, is_hop_by_hop},
+};
 use praxis_core::{
     circuit::CircuitBreakerConfig as CoreCircuitBreakerConfig,
     connectivity::is_private_ip,
@@ -53,6 +56,8 @@ const FILTER_NAME: &str = "http_callout";
 /// Maximum allowed value for `max_body_bytes` (100 MiB).
 const MAX_BODY_BYTES: usize = 104_857_600; // 100 MiB
 
+/// Default HTTP status when the callout fails.
+const DEFAULT_STATUS_ON_ERROR: u16 = 403;
 // -----------------------------------------------------------------------------
 // HttpCalloutFilter
 // -----------------------------------------------------------------------------
@@ -86,7 +91,7 @@ pub struct HttpCalloutFilter {
     extractions: Vec<CompiledExtraction>,
 
     /// Behavior on callout failure.
-    failure_mode: FailureModeConfig,
+    on_failure: OnFailure,
 
     /// Downstream headers to copy into the callout request.
     forward_headers: Vec<http::HeaderName>,
@@ -133,7 +138,7 @@ impl HttpCalloutFilter {
 
         validate_callout_url(&cfg.target.url)?;
         validate_max_body_bytes(cfg.request.max_body_bytes)?;
-        validate_status_on_error(cfg.status_on_error)?;
+        let status_on_error = validate_status_on_error(FILTER_NAME, cfg.status_on_error, DEFAULT_STATUS_ON_ERROR)?;
 
         let body_shaper = BodyShaper::compile(&cfg.target.body)?;
         let headers = parse_static_headers(&cfg)?;
@@ -150,14 +155,14 @@ impl HttpCalloutFilter {
             body_shaper,
             client,
             extractions,
-            failure_mode: cfg.on_failure,
+            on_failure: cfg.on_failure,
             forward_headers,
             headers,
             inject_headers,
             max_body_bytes: cfg.request.max_body_bytes,
             max_depth: cfg.max_depth.unwrap_or(1),
             phase: cfg.request.phase,
-            status_on_error: cfg.status_on_error.unwrap_or(403),
+            status_on_error,
             target,
             timeout: cfg.target.timeout,
             url: cfg.target.url,
@@ -304,9 +309,9 @@ impl HttpCalloutFilter {
     /// The action to take when the callout itself fails (DNS, connect,
     /// I/O), per the configured failure mode.
     fn failure_action(&self) -> FilterAction {
-        match self.failure_mode {
-            FailureModeConfig::Open => FilterAction::Continue,
-            FailureModeConfig::Closed => Self::build_rejection(self.status_on_error),
+        match self.on_failure {
+            OnFailure::Open => FilterAction::Continue,
+            OnFailure::Closed => Self::build_rejection(self.status_on_error),
         }
     }
 
@@ -398,31 +403,6 @@ fn request_depth(ctx: &HttpFilterContext<'_>) -> u32 {
 fn validate_max_body_bytes(n: usize) -> Result<(), FilterError> {
     if n > MAX_BODY_BYTES {
         return Err(format!("http_callout: max_body_bytes ({n}) exceeds limit ({MAX_BODY_BYTES})").into());
-    }
-    Ok(())
-}
-
-/// Reject a `status_on_error` value outside the valid HTTP status range.
-///
-/// `None` (unset) is accepted; the filter then defaults to `403`. A
-/// configured value must be a legal HTTP status code (100–599) so the
-/// rejection path never emits a nonsensical status like `0` or `65535`.
-///
-/// The `100..=599` range check is the established convention across the
-/// codebase (`openai_responses_compact`, `web_search`, core builtins),
-/// currently duplicated per filter. See the follow-up to promote a shared
-/// `validate_status_on_error` helper into `praxis-ai-apis`.
-///
-/// # Errors
-///
-/// Returns [`FilterError`] if a configured status is outside 100–599.
-fn validate_status_on_error(status: Option<u16>) -> Result<(), FilterError> {
-    if let Some(code) = status
-        && !(100..=599).contains(&code)
-    {
-        return Err(
-            format!("http_callout: status_on_error ({code}) must be a valid HTTP status code (100-599)").into(),
-        );
     }
     Ok(())
 }
