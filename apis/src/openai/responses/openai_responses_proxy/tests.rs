@@ -594,7 +594,10 @@ async fn compacted_outbound_serializes_resolved_file_data_not_file_url() {
     ));
 
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-    assert!(matches!(action, FilterAction::Continue));
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "compaction rewrite should continue with the resolved current-turn body"
+    );
 
     let outbound: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
     let outbound_text = outbound.to_string();
