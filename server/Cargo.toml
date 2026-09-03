@@ -35,7 +35,14 @@ token-rate-limit-filter = ["praxis-ai-filters/token-rate-limit-filter", "experim
 experimental = ["praxis-ai-filters/experimental"]
 opentelemetry = ["praxis-ai-filters/opentelemetry"]
 llmd-ext-proc = ["dep:praxis-ai-llmd-ext-proc"]
-praxis-main = ["praxis-ai-filters/praxis-main", "praxis-ai-apis/praxis-main"]
+# Praxis core main moved admin endpoints behind `admin-api` (off by
+# default). crates.io 0.5.3 does not have that feature; enable it only
+# after `patch-praxis` so `test-praxis-main` can compile.
+praxis-main = [
+    "praxis-ai-filters/praxis-main",
+    "praxis-ai-apis/praxis-main",
+    "praxis-protocol/admin-api",
+]
 
 [lints]
 workspace = true
