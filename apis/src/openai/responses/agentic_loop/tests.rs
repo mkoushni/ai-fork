@@ -1252,6 +1252,52 @@ fn web_search_call_excluded_from_messages_but_persisted() {
 }
 
 #[test]
+fn tool_search_call_queued_for_deferred_discovery() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "output": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_1",
+                "status": "completed"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "tool_search_call should continue so dispatch can loop"
+    );
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert_eq!(state.tool_search_calls.len(), 1);
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|item| item.get("type").and_then(Value::as_str) != Some("tool_search_call")),
+        "tool_search_call should not enter backend messages"
+    );
+    assert!(
+        state
+            .persisted_messages
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("tool_search_call")),
+        "tool_search_call should be persisted"
+    );
+}
+
+#[test]
 fn web_search_call_does_not_count_as_function_call_for_limit() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");

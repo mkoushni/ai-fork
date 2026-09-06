@@ -21,7 +21,7 @@ use crate::{
             approval::{ApprovalPolicy, parse_approval_policy, requires_approval},
             config::{McpDispatchConfig, build_config},
         },
-        state::ResponsesState,
+        state::{DeferredMcpConnector, ResponsesState},
     },
     test_utils::{make_filter_context, make_request},
 };
@@ -1027,6 +1027,39 @@ fn on_response_body_with_mcp_calls_sets_execute_metadata() {
     assert_eq!(
         ctx.filter_metadata.get("openai_mcp_dispatch.action"),
         Some(&"execute_mcp".to_owned())
+    );
+    assert_dispatch_action(&ctx, "loop");
+}
+
+#[test]
+fn on_response_body_deferred_tool_search_sets_loop() {
+    let filter = make_dispatch_filter();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let state = ResponsesState {
+        deferred_mcp: vec![DeferredMcpConnector {
+            allow_loopback: true,
+            authorization: None,
+            allowed_tools: None,
+            connector_id: "corp_drive".to_owned(),
+            headers: None,
+            max_rewritten_body_bytes: 67_108_864,
+            max_tools: 128,
+            require_approval: None,
+            server_label: "drive".to_owned(),
+            server_url: "https://drive.example.com/mcp".to_owned(),
+            timeout: std::time::Duration::from_secs(5),
+        }],
+        tool_search_calls: vec![json!({"type": "tool_search_call", "id": "tsc_1"})],
+        ..ResponsesState::default()
+    };
+    ctx.extensions.insert(state);
+    let mut body = None;
+    let result = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(matches!(result, FilterAction::Continue));
+    assert_eq!(
+        ctx.filter_metadata.get("openai_mcp_dispatch.action"),
+        Some(&"discover_mcp".to_owned())
     );
     assert_dispatch_action(&ctx, "loop");
 }

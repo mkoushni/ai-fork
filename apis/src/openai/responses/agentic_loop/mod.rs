@@ -155,6 +155,11 @@ const META_STATUS: &str = "responses.status";
 /// control in `on_response_body` (end-of-stream), writing
 /// `filter_results` for `iterative_request_router` transitions.
 ///
+/// Also extracts `tool_search_call` items into
+/// `ResponsesState.tool_search_calls` so `openai_mcp_dispatch` can
+/// load deferred connectors on the next iteration without forwarding
+/// those items to the inference backend.
+///
 /// # YAML
 ///
 /// ```yaml
@@ -306,6 +311,7 @@ impl HttpFilter for AgenticLoopFilter {
 /// the original client header).
 fn prepare_iteration(ctx: &mut HttpFilterContext<'_>, state: &mut ResponsesState) {
     state.tool_calls.clear();
+    state.tool_search_calls.clear();
     state.web_search_calls.clear();
     state.parallel_tool_calls = false;
     set_request_body_field(state, "parallel_tool_calls", Value::Bool(false));
@@ -342,7 +348,7 @@ fn evaluate_loop_decision(
     body: &mut Option<Bytes>,
     config: &AgenticLoopConfig,
 ) -> Result<FilterAction, FilterError> {
-    if state.tool_calls.is_empty() && state.web_search_calls.is_empty() {
+    if state.tool_calls.is_empty() && state.web_search_calls.is_empty() && state.tool_search_calls.is_empty() {
         trace!("no tool calls, signaling done");
         state.finalize_response_body(body);
         return set_done(ctx);
@@ -425,6 +431,10 @@ fn collect_output_items(response: &Value, state: &mut ResponsesState) {
                 // appends a backend-valid function_call/function_call_output
                 // bridge for the next inference step.
                 state.web_search_calls.push(item.clone());
+                state.persisted_messages.push(item.clone());
+            },
+            Some("tool_search_call") => {
+                state.tool_search_calls.push(item.clone());
                 state.persisted_messages.push(item.clone());
             },
             _ => {},

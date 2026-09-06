@@ -10,7 +10,7 @@
 //!
 //! [`RequestExtensions`]: praxis_filter::RequestExtensions
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, time::Duration};
 
 use bytes::Bytes;
 
@@ -73,6 +73,16 @@ pub(crate) struct ResponsesState {
     /// Current agentic loop iteration (0-indexed). Incremented by
     /// `openai_agentic_loop` at the start of each new inference round.
     pub iteration: u32,
+
+    /// Configured MCP connectors waiting for `tool_search` discovery.
+    ///
+    /// Populated by `openai_mcp_tool_resolve` when a request uses
+    /// `connector_id` with `defer_loading: true`. Consumed by
+    /// `openai_mcp_dispatch` on a later `tool_search_call` to load
+    /// definitions from the internally resolved endpoint. Holds the
+    /// pipeline-local URL and credentials; never serialized to the
+    /// inference backend, client responses, or persisted records.
+    pub deferred_mcp: Vec<DeferredMcpConnector>,
 
     /// Maximum number of built-in tool invocations.
     ///
@@ -151,6 +161,13 @@ pub(crate) struct ResponsesState {
     /// duplicate dispatch.
     pub tool_calls: Vec<serde_json::Value>,
 
+    /// `tool_search_call` items from the current inference response.
+    ///
+    /// Cleared by `openai_agentic_loop` at the start of each iteration.
+    /// `openai_mcp_dispatch` consumes these to load deferred connector
+    /// tools before the next inference round.
+    pub tool_search_calls: Vec<serde_json::Value>,
+
     /// Web search calls from the current inference response only.
     ///
     /// Cleared by `openai_agentic_loop` at the start of each iteration.
@@ -182,6 +199,62 @@ pub(crate) struct ResponsesState {
     pub accumulated_output: Vec<serde_json::Value>,
 }
 
+/// Internally resolved MCP connector waiting for deferred discovery.
+#[derive(Clone)]
+pub(crate) struct DeferredMcpConnector {
+    /// Allow loopback MCP endpoints for this listing.
+    pub allow_loopback: bool,
+
+    /// Request `authorization` forwarded to the MCP endpoint.
+    pub authorization: Option<String>,
+
+    /// Original `allowed_tools` filter from the request entry.
+    pub allowed_tools: Option<serde_json::Value>,
+
+    /// Pipeline-local connector identifier from the request.
+    pub connector_id: String,
+
+    /// Request `headers` forwarded to the MCP endpoint.
+    pub headers: Option<serde_json::Value>,
+
+    /// Maximum size of the provider-visible body after deferred expansion.
+    pub max_rewritten_body_bytes: usize,
+
+    /// Maximum tools accepted from a single `tools/list` response.
+    pub max_tools: usize,
+
+    /// Request `require_approval` policy preserved for later dispatch.
+    pub require_approval: Option<serde_json::Value>,
+
+    /// Public server label used in function-name encoding and dispatch.
+    pub server_label: String,
+
+    /// Configured MCP endpoint URL. Never written to backend requests,
+    /// client-visible responses, logs, or persisted response state.
+    pub server_url: String,
+
+    /// Per-server timeout for the deferred `tools/list` call.
+    pub timeout: Duration,
+}
+
+impl fmt::Debug for DeferredMcpConnector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeferredMcpConnector")
+            .field("allow_loopback", &self.allow_loopback)
+            .field("authorization", &self.authorization.as_ref().map(|_| "<redacted>"))
+            .field("allowed_tools", &self.allowed_tools)
+            .field("connector_id", &self.connector_id)
+            .field("headers", &self.headers.as_ref().map(|_| "<redacted>"))
+            .field("max_rewritten_body_bytes", &self.max_rewritten_body_bytes)
+            .field("max_tools", &self.max_tools)
+            .field("require_approval", &self.require_approval)
+            .field("server_label", &self.server_label)
+            .field("server_url", &"<redacted>")
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
 /// Whether the proxy can preserve the original request bytes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RequestBodyRebuild {
@@ -194,6 +267,7 @@ pub(crate) enum RequestBodyRebuild {
 }
 
 impl Default for ResponsesState {
+    #[expect(clippy::too_many_lines, reason = "one initializer per ResponsesState field")]
     fn default() -> Self {
         Self {
             citation_files: HashMap::new(),
@@ -204,6 +278,7 @@ impl Default for ResponsesState {
             history_rehydrated: false,
             input: Vec::new(),
             iteration: 0,
+            deferred_mcp: Vec::new(),
             max_tool_calls: None,
             mcp_tool_map: HashMap::new(),
             messages: Vec::new(),
@@ -219,6 +294,7 @@ impl Default for ResponsesState {
             request_body_rebuild: RequestBodyRebuild::PreserveOriginal,
             response_object: serde_json::Value::Null,
             tool_calls: Vec::new(),
+            tool_search_calls: Vec::new(),
             web_search_calls: Vec::new(),
             tool_choice: serde_json::Value::String("auto".to_owned()),
             tools: Vec::new(),
@@ -638,6 +714,8 @@ mod tests {
         assert!(state.request_body.is_null());
         assert!(state.response_object.is_null());
         assert!(state.tool_calls.is_empty());
+        assert!(state.tool_search_calls.is_empty());
+        assert!(state.deferred_mcp.is_empty());
         assert!(state.web_search_calls.is_empty());
         assert_eq!(state.tool_choice, json!("auto"));
         assert!(state.tools.is_empty());

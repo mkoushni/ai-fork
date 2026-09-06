@@ -9,6 +9,8 @@ Resolves MCP tool entries from the Responses API `tools` array into concrete too
 
 Rejects the request with HTTP 400 before any callouts if two or more resolvable MCP entries share the same `server_label` (including entries that differ only by credentials).
 
+Configured `connector_id` entries with `defer_loading: true` are accepted when the request also includes a `tool_search` tool. Those entries are resolved to an internal endpoint without an eager `tools/list` call; `connector_id`, the configured URL, and credentials are stripped from the outbound body. Deferred loading requires `openai_mcp_dispatch` inside an agentic loop. The first inference round keeps a sanitized `type: mcp` stub plus `tool_search` (an OpenAI-shaped hosted-tool backend); any later `tool_search_call` loads every pending deferred connector.
+
 ## Configuration
 
 | Field | Type | Required | Description |
@@ -37,4 +39,7 @@ filter: openai_mcp_tool_resolve
 timeout_ms: 5000
 max_rewritten_body_bytes: 67108864
 max_tools: 128
+connectors:
+  - id: corp_drive
+    server_url: https://drive-mcp.internal/mcp
 ```

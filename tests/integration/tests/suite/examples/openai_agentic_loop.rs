@@ -395,6 +395,307 @@ fn round_trip_captures_tool_and_model_requests() {
     );
 }
 
+#[test]
+fn deferred_connector_loads_on_tool_search_then_dispatches() {
+    let search_response = serde_json::json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "tool_search_call",
+            "id": "tsc_1",
+            "status": "completed"
+        }]
+    });
+    let function_response = serde_json::json!({
+        "id": "resp_2",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "drive__search",
+            "arguments": r#"{"query":"reports"}"#,
+            "status": "completed"
+        }]
+    });
+    let final_response = serde_json::json!({
+        "id": "resp_3",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Found quarterly reports."}]
+        }]
+    });
+
+    let model = StatefulCapturingBackend::new(vec![
+        (200, serde_json::to_string(&search_response).unwrap()),
+        (200, serde_json::to_string(&function_response).unwrap()),
+        (200, serde_json::to_string(&final_response).unwrap()),
+    ])
+    .start_with_shutdown();
+
+    let mcp = start_mcp_mock_server_with_config(McpMockConfig {
+        tools: vec![
+            McpToolFixture::new("search").with_description("Search files"),
+            McpToolFixture::new("delete").with_description("Delete files"),
+        ],
+        ..McpMockConfig::default()
+    });
+
+    let proxy_port = free_port();
+    let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp.port());
+    let config = load_loopback_mcp_config_with_connector(proxy_port, model.port(), "corp_drive", &mcp_url);
+    let proxy = start_proxy(&config);
+
+    let request_body = serde_json::json!({
+        "model": "gpt-4.1",
+        "input": "Find quarterly reports",
+        "tools": [
+            {"type": "tool_search"},
+            {
+                "type": "mcp",
+                "server_label": "drive",
+                "connector_id": "corp_drive",
+                "defer_loading": true,
+                "authorization": "Bearer secret",
+                "allowed_tools": ["search"],
+                "require_approval": "never"
+            }
+        ]
+    });
+    let raw = http_send(
+        proxy.addr(),
+        &json_post("/v1/responses", &serde_json::to_string(&request_body).unwrap()),
+    );
+
+    assert_eq!(
+        parse_status(&raw),
+        200,
+        "deferred connector round-trip should return 200"
+    );
+
+    let model_reqs = model.requests();
+    assert_eq!(model_reqs.len(), 3, "search, loaded tools, then tool result");
+
+    let first_body: serde_json::Value = serde_json::from_str(&model_reqs[0].body).unwrap();
+    let first_tools = first_body["tools"].as_array().expect("first request should have tools");
+    assert!(
+        first_tools.iter().any(|tool| tool["type"] == "tool_search"),
+        "first inference should keep tool_search"
+    );
+    assert!(
+        first_tools
+            .iter()
+            .any(|tool| tool["type"] == "mcp" && tool["defer_loading"] == true),
+        "first inference should keep a sanitized deferred MCP entry"
+    );
+    assert!(
+        first_tools.iter().all(|tool| tool.get("connector_id").is_none()),
+        "connector_id must not be delegated to the backend"
+    );
+    let first_raw = &model_reqs[0].body;
+    assert!(
+        !first_raw.contains(&mcp_url) && !first_raw.contains("Bearer secret"),
+        "URL and credentials must not leak into the first inference request"
+    );
+
+    let second_body: serde_json::Value = serde_json::from_str(&model_reqs[1].body).unwrap();
+    let second_tools = second_body["tools"]
+        .as_array()
+        .expect("second request should have tools");
+    assert!(
+        second_tools
+            .iter()
+            .any(|tool| tool["type"] == "function" && tool["name"] == "drive__search"),
+        "tool_search should load connector tools as functions: {second_tools:?}"
+    );
+    assert!(
+        second_tools.iter().all(|tool| tool["name"] != "drive__delete"),
+        "allowed_tools should filter deferred connector listings: {second_tools:?}"
+    );
+    let second_raw = &model_reqs[1].body;
+    assert!(
+        !second_raw.contains(&mcp_url) && !second_raw.contains("Bearer secret"),
+        "URL and credentials must not leak into later inference requests"
+    );
+    assert!(
+        mcp.method_count("tools/list") >= 1,
+        "tool_search should list tools from the configured connector"
+    );
+    assert_eq!(mcp.method_count("tools/call"), 1, "loaded tools should dispatch");
+    let list_req = mcp
+        .received_requests()
+        .into_iter()
+        .find(|request| request.json_rpc_method.as_deref() == Some("tools/list"))
+        .expect("deferred discovery should call tools/list");
+    assert!(
+        list_req
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("authorization") && value.contains("secret")),
+        "deferred discovery should forward request authorization"
+    );
+    assert_eq!(mcp.tool_call_count("search"), 1);
+
+    let response: serde_json::Value = serde_json::from_str(&parse_body(&raw)).unwrap();
+    let output = response["output"].as_array().cloned().unwrap_or_default();
+    assert!(
+        output
+            .iter()
+            .any(|item| item["type"] == "mcp_list_tools" && item["server_label"] == "drive"),
+        "client response should include mcp_list_tools without leaking the endpoint"
+    );
+    let listing = output.iter().find(|item| item["type"] == "mcp_list_tools").unwrap();
+    assert!(listing.get("server_url").is_none());
+    assert!(listing.get("connector_id").is_none());
+    assert!(listing.get("authorization").is_none());
+}
+
+#[test]
+fn mixed_eager_and_deferred_connectors_list_at_the_right_time() {
+    let search_response = serde_json::json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "tool_search_call",
+            "id": "tsc_1",
+            "status": "completed"
+        }]
+    });
+    let function_response = serde_json::json!({
+        "id": "resp_2",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "drive__search",
+            "arguments": r#"{"query":"reports"}"#,
+            "status": "completed"
+        }]
+    });
+    let final_response = serde_json::json!({
+        "id": "resp_3",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Weather is clear; reports found."}]
+        }]
+    });
+
+    let model = StatefulCapturingBackend::new(vec![
+        (200, serde_json::to_string(&search_response).unwrap()),
+        (200, serde_json::to_string(&function_response).unwrap()),
+        (200, serde_json::to_string(&final_response).unwrap()),
+    ])
+    .start_with_shutdown();
+
+    let weather = start_mcp_mock_server_with_config(McpMockConfig {
+        tools: vec![McpToolFixture::new("get_weather").with_description("Get weather")],
+        ..McpMockConfig::default()
+    });
+    let drive = start_mcp_mock_server_with_config(McpMockConfig {
+        tools: vec![McpToolFixture::new("search").with_description("Search files")],
+        ..McpMockConfig::default()
+    });
+
+    let proxy_port = free_port();
+    let weather_url = format!("http://127.0.0.1:{}/mcp", weather.port());
+    let drive_url = format!("http://127.0.0.1:{}/mcp", drive.port());
+    let config = load_loopback_mcp_config_with_connectors(
+        proxy_port,
+        model.port(),
+        &[("weather_svc", &weather_url), ("corp_drive", &drive_url)],
+    );
+    let proxy = start_proxy(&config);
+
+    let request_body = serde_json::json!({
+        "model": "gpt-4.1",
+        "input": "Weather and reports",
+        "tools": [
+            {"type": "tool_search"},
+            {
+                "type": "mcp",
+                "server_label": "weather",
+                "connector_id": "weather_svc",
+                "allowed_tools": ["get_weather"],
+                "require_approval": "never"
+            },
+            {
+                "type": "mcp",
+                "server_label": "drive",
+                "connector_id": "corp_drive",
+                "defer_loading": true,
+                "allowed_tools": ["search"],
+                "require_approval": "never"
+            }
+        ]
+    });
+    let raw = http_send(
+        proxy.addr(),
+        &json_post("/v1/responses", &serde_json::to_string(&request_body).unwrap()),
+    );
+    assert_eq!(
+        parse_status(&raw),
+        200,
+        "mixed eager and deferred round-trip should return 200"
+    );
+
+    let model_reqs = model.requests();
+    assert_eq!(model_reqs.len(), 3, "search, loaded tools, then tool result");
+
+    let first_body: serde_json::Value = serde_json::from_str(&model_reqs[0].body).unwrap();
+    let first_tools = first_body["tools"].as_array().cloned().unwrap_or_default();
+    assert!(
+        first_tools
+            .iter()
+            .any(|tool| tool["type"] == "function" && tool["name"] == "weather__get_weather"),
+        "eager connector should be listed before the first inference: {first_tools:?}"
+    );
+    assert!(
+        first_tools
+            .iter()
+            .any(|tool| tool["type"] == "mcp" && tool["server_label"] == "drive" && tool["defer_loading"] == true),
+        "deferred connector should remain a sanitized MCP stub: {first_tools:?}"
+    );
+    assert!(
+        first_tools.iter().all(|tool| tool["name"] != "drive__search"),
+        "deferred tools must not appear before tool_search: {first_tools:?}"
+    );
+    assert!(
+        first_tools.iter().all(|tool| tool.get("connector_id").is_none()),
+        "connector_id must not be delegated to the backend"
+    );
+
+    let second_body: serde_json::Value = serde_json::from_str(&model_reqs[1].body).unwrap();
+    let second_tools = second_body["tools"].as_array().cloned().unwrap_or_default();
+    assert!(
+        second_tools
+            .iter()
+            .any(|tool| tool["type"] == "function" && tool["name"] == "drive__search"),
+        "tool_search should load deferred connector tools: {second_tools:?}"
+    );
+
+    assert!(
+        weather.method_count("tools/list") >= 1,
+        "eager connector should list tools during resolve"
+    );
+    assert!(
+        drive.method_count("tools/list") >= 1,
+        "deferred connector should list tools after tool_search"
+    );
+    assert_eq!(drive.tool_call_count("search"), 1);
+    assert_eq!(weather.method_count("tools/call"), 0);
+}
+
 // -----------------------------------------------------------------------------
 // Round-Trip: Web Search via IRR
 // -----------------------------------------------------------------------------
@@ -715,4 +1016,43 @@ fn load_loopback_mcp_config(proxy_port: u16, model_port: u16) -> praxis_core::co
         1,
     );
     praxis_core::config::Config::from_yaml(&yaml).expect("parse loopback MCP config")
+}
+
+fn load_loopback_mcp_config_with_connector(
+    proxy_port: u16,
+    model_port: u16,
+    connector_id: &str,
+    mcp_url: &str,
+) -> praxis_core::config::Config {
+    load_loopback_mcp_config_with_connectors(proxy_port, model_port, &[(connector_id, mcp_url)])
+}
+
+fn load_loopback_mcp_config_with_connectors(
+    proxy_port: u16,
+    model_port: u16,
+    connectors: &[(&str, &str)],
+) -> praxis_core::config::Config {
+    let path = example_config_path("openai/responses/agentic-loop.yaml");
+    let yaml = std::fs::read_to_string(path).expect("read agentic-loop example");
+    let yaml = patch_yaml(&yaml, proxy_port, &HashMap::from([("127.0.0.1:3001", model_port)]));
+    let yaml = patch_web_search_api_key(&yaml);
+    let connector_yaml: String = connectors
+        .iter()
+        .map(|(id, url)| format!("          - id: {id}\n            server_url: {url}\n"))
+        .collect();
+    let yaml = yaml.replacen(
+        "      - filter: openai_mcp_tool_resolve\n        connectors:\n          - id: corp_drive\n            server_url: https://drive-mcp.internal:8443/mcp\n",
+        &format!("      - filter: openai_mcp_tool_resolve\n        allow_loopback: true\n        connectors:\n{connector_yaml}"),
+        1,
+    );
+    assert!(
+        connectors.iter().all(|(id, _)| yaml.contains(&format!("id: {id}"))),
+        "expected to rewrite example connector config for {connectors:?}"
+    );
+    let yaml = yaml.replacen(
+        "              - filter: openai_mcp_dispatch\n",
+        "              - filter: openai_mcp_dispatch\n                allow_loopback: true\n",
+        1,
+    );
+    praxis_core::config::Config::from_yaml(&yaml).expect("parse loopback MCP connector config")
 }
