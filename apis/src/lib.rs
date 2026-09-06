@@ -11,6 +11,7 @@
 
 pub mod anthropic;
 pub mod callout_policy;
+pub mod callout_target;
 pub mod classifier;
 pub mod http_hop;
 pub mod json_body;
