@@ -21,6 +21,26 @@ pub fn is_promotable_value(val: &str) -> bool {
     val.len() <= MAX_PROMOTED_VALUE_LEN && is_safe_promoted_value(val)
 }
 
+/// Hop-by-hop, framing, Host, and proxy-auth names that must not be
+/// used as promotion-header targets.
+pub fn is_transport_controlled_header(name: &str) -> bool {
+    [
+        "connection",
+        "content-length",
+        "host",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ]
+    .iter()
+    .any(|blocked| name.eq_ignore_ascii_case(blocked))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +73,30 @@ mod tests {
     #[test]
     fn accepts_empty_string() {
         assert!(is_promotable_value(""), "empty string should be accepted");
+    }
+
+    #[test]
+    fn transport_controlled_headers_are_blocked() {
+        for name in [
+            "content-length",
+            "Content-Length",
+            "host",
+            "transfer-encoding",
+            "proxy-authorization",
+            "connection",
+        ] {
+            assert!(
+                is_transport_controlled_header(name),
+                "transport header '{name}' should be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn promotion_defaults_are_not_transport_controlled() {
+        assert!(
+            !is_transport_controlled_header("x-praxis-ai-effective-model"),
+            "default promotion header must remain allowed"
+        );
     }
 }

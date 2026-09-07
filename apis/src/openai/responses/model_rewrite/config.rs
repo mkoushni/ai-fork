@@ -58,14 +58,22 @@ pub(super) struct ModelRewriteConfig {
 // -----------------------------------------------------------------------------
 
 /// Configurable header names for promoted model values.
+///
+/// Transport-controlled names (`content-length`, `host`, hop-by-hop,
+/// and proxy-auth headers) are rejected. The two fields must not share
+/// the same name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelRewriteHeaders {
     /// Header name for the effective (post-rewrite) model value.
+    ///
+    /// Must not be a hop-by-hop, framing, Host, or proxy-auth header.
     #[serde(default = "default_effective_model_header")]
     pub effective_model: Option<String>,
 
     /// Header name for the original (pre-rewrite) model value.
+    ///
+    /// Must not be a hop-by-hop, framing, Host, or proxy-auth header.
     #[serde(default = "default_original_model_header")]
     pub original_model: Option<String>,
 }
@@ -139,9 +147,29 @@ pub(super) fn validate_config(cfg: &ModelRewriteConfig) -> Result<(), FilterErro
     }
 
     validate_aliases(&cfg.model_aliases)?;
-    validate_header_name("effective_model", cfg.headers.effective_model.as_deref())?;
-    validate_header_name("original_model", cfg.headers.original_model.as_deref())?;
+    validate_promotion_headers(&cfg.headers)?;
 
+    Ok(())
+}
+
+/// Reject empty, invalid, transport-controlled, or duplicated promotion headers.
+fn validate_promotion_headers(headers: &ModelRewriteHeaders) -> Result<(), FilterError> {
+    validate_header_name("effective_model", headers.effective_model.as_deref())?;
+    validate_header_name("original_model", headers.original_model.as_deref())?;
+    reject_duplicate_promotion_headers(headers.effective_model.as_deref(), headers.original_model.as_deref())
+}
+
+/// Reject configuring the same promotion header for both model values.
+fn reject_duplicate_promotion_headers(effective: Option<&str>, original: Option<&str>) -> Result<(), FilterError> {
+    let (Some(effective), Some(original)) = (effective, original) else {
+        return Ok(());
+    };
+    if effective.eq_ignore_ascii_case(original) {
+        return Err(
+            "openai_responses_model_rewrite: 'effective_model' and 'original_model' must not use the same header name"
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -174,10 +202,21 @@ fn validate_header_name(field: &str, name: Option<&str>) -> Result<(), FilterErr
     if name.is_empty() {
         return Err(format!("openai_responses_model_rewrite: '{field}' header name must not be empty").into());
     }
-    if http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+    let Ok(parsed) = http::HeaderName::from_bytes(name.as_bytes()) else {
         return Err(
             format!("openai_responses_model_rewrite: '{field}' header name is not a valid HTTP header name").into(),
         );
+    };
+    reject_transport_promotion_header(field, parsed.as_str())
+}
+
+/// Reject hop-by-hop, framing, Host, and proxy-auth promotion targets.
+fn reject_transport_promotion_header(field: &str, name: &str) -> Result<(), FilterError> {
+    if crate::promotion::is_transport_controlled_header(name) {
+        return Err(format!(
+            "openai_responses_model_rewrite: '{field}' must not use transport or credential header '{name}'"
+        )
+        .into());
     }
     Ok(())
 }
@@ -426,6 +465,59 @@ extra: true
     #[test]
     fn validate_header_name_valid_accepted() {
         assert!(validate_header_name("test", Some("x-custom-header")).is_ok());
+    }
+
+    #[test]
+    fn validate_header_name_rejects_content_length() {
+        let err = validate_header_name("effective_model", Some("content-length")).unwrap_err();
+        assert!(
+            err.to_string().contains("transport or credential header"),
+            "content-length should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_rejects_host_case_insensitively() {
+        let err = validate_header_name("original_model", Some("Host")).unwrap_err();
+        assert!(
+            err.to_string().contains("host"),
+            "Host should be rejected as transport header: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_duplicate_promotion_headers() {
+        let cfg = ModelRewriteConfig {
+            default_model: Some("llama-3.3-70b".into()),
+            headers: ModelRewriteHeaders {
+                effective_model: Some("x-model".into()),
+                original_model: Some("X-Model".into()),
+            },
+            model_aliases: HashMap::new(),
+            on_invalid: OnInvalidBehavior::Continue,
+        };
+        let err = validate_config(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("same header name"),
+            "duplicate promotion headers should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_config_accepts_distinct_custom_promotion_headers() {
+        let cfg = ModelRewriteConfig {
+            default_model: Some("llama-3.3-70b".into()),
+            headers: ModelRewriteHeaders {
+                effective_model: Some("x-effective-model".into()),
+                original_model: Some("x-original-model".into()),
+            },
+            model_aliases: HashMap::new(),
+            on_invalid: OnInvalidBehavior::Continue,
+        };
+        assert!(
+            validate_config(&cfg).is_ok(),
+            "distinct custom headers should be accepted"
+        );
     }
 
     // -- null header disables promotion ---------------------------------------

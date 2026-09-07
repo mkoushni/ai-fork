@@ -15,8 +15,8 @@ Quote wildcard alias keys in YAML, such as `"gpt-4.1-*"`, so `*` is parsed as a 
 |-------|------|---------|-------------|
 | `default_model` | string | no | Model name to inject when the request body has no `model` field or when the field is `null`. |
 | `headers` | ModelRewriteHeaders | no | Header names for promoted model values. |
-| `headers.effective_model` | string | no | Header name for the effective (post-rewrite) model value. |
-| `headers.original_model` | string | no | Header name for the original (pre-rewrite) model value. |
+| `headers.effective_model` | string | no | Header name for the effective (post-rewrite) model value. Must not be a hop-by-hop, framing, Host, or proxy-auth header. |
+| `headers.original_model` | string | no | Header name for the original (pre-rewrite) model value. Must not be a hop-by-hop, framing, Host, or proxy-auth header. |
 | `model_aliases` | object<string, string> | no | Map from client-facing model names or single-wildcard patterns to backend model names. Quote wildcard keys in YAML. Exact aliases win before wildcard aliases; wildcard aliases are matched by literal specificity. |
 | `on_invalid` | `continue` \| `reject` | no | Behavior when the body is not valid JSON. |
 
