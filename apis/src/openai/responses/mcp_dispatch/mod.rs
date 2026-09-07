@@ -212,11 +212,7 @@ impl HttpFilter for McpDispatchFilter {
     }
 
     fn response_body_mode(&self) -> BodyMode {
-        // Accept up to the absolute ceiling; the pipeline's body_limits
-        // decides the real raw cap. This filter only reads the body.
-        BodyMode::StreamBuffer {
-            max_bytes: Some(MAX_JSON_BODY_BYTES),
-        }
+        BodyMode::Stream
     }
 
     async fn on_request(&self, _ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
@@ -257,7 +253,7 @@ impl HttpFilter for McpDispatchFilter {
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
         if !end_of_stream {
-            return Ok(FilterAction::Release);
+            return Ok(FilterAction::Continue);
         }
 
         let Some(state) = ctx.extensions.get::<ResponsesState>() else {
