@@ -23,22 +23,12 @@ pub fn is_promotable_value(val: &str) -> bool {
 
 /// Hop-by-hop, framing, Host, and proxy-auth names that must not be
 /// used as promotion-header targets.
+///
+/// Composes [`crate::http_hop::is_hop_by_hop`] with `Host` and
+/// `Content-Length`, which are transport-controlled but not hop-by-hop.
 pub fn is_transport_controlled_header(name: &str) -> bool {
-    [
-        "connection",
-        "content-length",
-        "host",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "proxy-connection",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
-    ]
-    .iter()
-    .any(|blocked| name.eq_ignore_ascii_case(blocked))
+    let name = name.to_ascii_lowercase();
+    name == "content-length" || name == "host" || crate::http_hop::is_hop_by_hop(&name)
 }
 
 #[cfg(test)]

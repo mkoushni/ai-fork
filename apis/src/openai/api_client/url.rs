@@ -398,7 +398,11 @@ mod tests {
             "host",
             "content-length",
             "transfer-encoding",
+            "keep-alive",
+            "proxy-authenticate",
             "proxy-authorization",
+            "proxy-connection",
+            "te",
             "x-praxis-route",
         ] {
             let mut headers = vec![name.to_owned()];
