@@ -3447,7 +3447,9 @@ async fn on_response_body_appends_completed_response() {
     let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
     assert!(matches!(action, FilterAction::Continue));
     assert_eq!(
-        ctx.extensions.get::<ResponsesState>().map(|state| state.input.as_slice()),
+        ctx.extensions
+            .get::<ResponsesState>()
+            .map(|state| state.input.as_slice()),
         Some(input_items.as_slice()),
         "append-back must clone ResponsesState.input without taking or clearing it"
     );
