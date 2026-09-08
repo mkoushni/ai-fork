@@ -15,8 +15,8 @@ Quote wildcard alias keys in YAML, such as `"gpt-4.1-*"`, so `*` is parsed as a 
 |-------|------|---------|-------------|
 | `default_model` | string | no | Model name to inject when the request body has no `model` field or when the field is `null`. |
 | `headers` | ModelRewriteHeaders | no | Header names for promoted model values. `effective_model` and `original_model` must use distinct names. |
-| `headers.effective_model` | string | no | Header name for the effective (post-rewrite) model value. Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. Must differ from `original_model`. |
-| `headers.original_model` | string | no | Header name for the original (pre-rewrite) model value. Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. Must differ from `effective_model`. |
+| `headers.effective_model` | string | no | Header name for the effective (post-rewrite) model value. Must not be a hop-by-hop, framing, Host, credential, API-key, or other internal `x-praxis-*` header. Dedicated default `x-praxis-ai-effective-model` remains allowed. Must differ from `original_model`. |
+| `headers.original_model` | string | no | Header name for the original (pre-rewrite) model value. Must not be a hop-by-hop, framing, Host, credential, API-key, or other internal `x-praxis-*` header. Dedicated default `x-praxis-ai-original-model` remains allowed. Must differ from `effective_model`. |
 | `model_aliases` | object<string, string> | no | Map from client-facing model names or single-wildcard patterns to backend model names. Quote wildcard keys in YAML. Exact aliases win before wildcard aliases; wildcard aliases are matched by literal specificity. |
 | `on_invalid` | `continue` \| `reject` | no | Behavior when the body is not valid JSON. |
 

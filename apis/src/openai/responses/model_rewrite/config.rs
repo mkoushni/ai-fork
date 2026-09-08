@@ -61,22 +61,27 @@ pub(super) struct ModelRewriteConfig {
 
 /// Configurable header names for promoted model values.
 ///
-/// Transport, credential, and unrelated internal `x-praxis-*` names are
-/// rejected. The two fields must not share the same name.
+/// Transport, credential, API-key, and other internal `x-praxis-*` names
+/// are rejected. Dedicated defaults remain allowed. The two fields must
+/// not share the same name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelRewriteHeaders {
     /// Header name for the effective (post-rewrite) model value.
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header. Must differ from `original_model`.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-ai-effective-model` remains allowed. Must differ from
+    /// `original_model`.
     #[serde(default = "default_effective_model_header")]
     pub effective_model: Option<String>,
 
     /// Header name for the original (pre-rewrite) model value.
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header. Must differ from `effective_model`.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-ai-original-model` remains allowed. Must differ from
+    /// `effective_model`.
     #[serde(default = "default_original_model_header")]
     pub original_model: Option<String>,
 }
@@ -199,7 +204,7 @@ fn validate_aliases(aliases: &HashMap<String, String>) -> Result<(), FilterError
 
 /// Validate a configured promotion header name.
 fn validate_header_name(field: &str, name: Option<&str>) -> Result<(), FilterError> {
-    crate::promotion::validate_promotion_header("openai_responses_model_rewrite", field, name)
+    crate::promotion::validate_model_identity_promotion_header("openai_responses_model_rewrite", field, name)
 }
 
 // -----------------------------------------------------------------------------
@@ -481,6 +486,32 @@ extra: true
         assert!(
             err.to_string().contains("x-praxis-route"),
             "unrelated x-praxis-* promotion target should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_rejects_x_api_key() {
+        let err = validate_header_name("effective_model", Some("x-api-key")).unwrap_err();
+        assert!(
+            err.to_string().contains("x-api-key"),
+            "x-api-key promotion target should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_rejects_format_routing_header() {
+        let err = validate_header_name("effective_model", Some("x-praxis-ai-format")).unwrap_err();
+        assert!(
+            err.to_string().contains("x-praxis-ai-format"),
+            "x-praxis-ai-format must not receive a client-derived model: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_accepts_dedicated_effective_model_header() {
+        assert!(
+            validate_header_name("effective_model", Some("x-praxis-ai-effective-model")).is_ok(),
+            "dedicated effective-model header should remain allowed"
         );
     }
 

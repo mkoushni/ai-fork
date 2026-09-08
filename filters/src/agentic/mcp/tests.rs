@@ -85,6 +85,38 @@ fn reject_invalid_header_names() {
     );
 }
 
+#[test]
+fn reject_api_key_promotion_header() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+        headers:
+          method: x-api-key
+        "#,
+    )
+    .unwrap();
+    let err = McpFilter::from_config(&yaml).err().expect("should fail");
+    assert!(
+        err.to_string().contains("x-api-key"),
+        "x-api-key promotion header should be rejected: {err}"
+    );
+}
+
+#[test]
+fn reject_format_routing_promotion_header() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+        headers:
+          method: x-praxis-ai-format
+        "#,
+    )
+    .unwrap();
+    let err = McpFilter::from_config(&yaml).err().expect("should fail");
+    assert!(
+        err.to_string().contains("x-praxis-ai-format"),
+        "x-praxis-ai-format promotion header should be rejected: {err}"
+    );
+}
+
 // -----------------------------------------------------------------------------
 // Filter Behavior Tests
 // -----------------------------------------------------------------------------

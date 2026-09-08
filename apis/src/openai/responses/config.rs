@@ -16,35 +16,42 @@ use serde::Deserialize;
 
 /// Configurable header names for promoted classification facts.
 ///
-/// Transport, credential, and unrelated internal `x-praxis-*` names are rejected.
+/// Transport, credential, API-key, and other internal `x-praxis-*` names
+/// are rejected. Each field may use its dedicated default or a custom
+/// non-`x-praxis-*` header.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponsesFormatHeaders {
     /// Header name for the detected format (e.g. `openai_responses`, `openai_chat_completions`).
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-ai-format` remains allowed.
     #[serde(default = "default_format_header")]
     pub format: Option<String>,
 
     /// Header name for the extracted model value.
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-ai-model` remains allowed. Must not overwrite other
+    /// classification facts such as `x-praxis-ai-format`.
     #[serde(default = "default_model_header")]
     pub model: Option<String>,
 
     /// Header name for the extracted stream flag.
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-ai-stream` remains allowed.
     #[serde(default = "default_stream_header")]
     pub stream: Option<String>,
 
     /// Header name for the computed mode (`stateless` or `stateful`).
     ///
-    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` header.
+    /// Must not be a hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` header. Dedicated default
+    /// `x-praxis-responses-mode` remains allowed.
     #[serde(default = "default_mode_header")]
     pub mode: Option<String>,
 }
@@ -112,8 +119,8 @@ pub(crate) struct ResponsesFormatConfig {
 
     /// Header names for promoted classification facts.
     ///
-    /// Must not be hop-by-hop, framing, Host, credential, or unrelated
-    /// internal `x-praxis-*` names.
+    /// Must not be hop-by-hop, framing, Host, credential, API-key, or
+    /// other internal `x-praxis-*` names. Dedicated defaults remain allowed.
     #[serde(default)]
     pub headers: ResponsesFormatHeaders,
 }
@@ -124,10 +131,30 @@ pub(crate) struct ResponsesFormatConfig {
 
 /// Validate the parsed configuration.
 pub(crate) fn build_config(cfg: ResponsesFormatConfig) -> Result<ResponsesFormatConfig, FilterError> {
-    crate::promotion::validate_promotion_header("openai_responses_format", "format", cfg.headers.format.as_deref())?;
-    crate::promotion::validate_promotion_header("openai_responses_format", "model", cfg.headers.model.as_deref())?;
-    crate::promotion::validate_promotion_header("openai_responses_format", "stream", cfg.headers.stream.as_deref())?;
-    crate::promotion::validate_promotion_header("openai_responses_format", "mode", cfg.headers.mode.as_deref())?;
+    crate::promotion::validate_dedicated_promotion_header(
+        "openai_responses_format",
+        "format",
+        cfg.headers.format.as_deref(),
+        &["x-praxis-ai-format"],
+    )?;
+    crate::promotion::validate_dedicated_promotion_header(
+        "openai_responses_format",
+        "model",
+        cfg.headers.model.as_deref(),
+        &["x-praxis-ai-model"],
+    )?;
+    crate::promotion::validate_dedicated_promotion_header(
+        "openai_responses_format",
+        "stream",
+        cfg.headers.stream.as_deref(),
+        &["x-praxis-ai-stream"],
+    )?;
+    crate::promotion::validate_dedicated_promotion_header(
+        "openai_responses_format",
+        "mode",
+        cfg.headers.mode.as_deref(),
+        &["x-praxis-responses-mode"],
+    )?;
 
     Ok(cfg)
 }
@@ -248,6 +275,24 @@ extra: true
     }
 
     #[test]
+    fn build_config_api_key_header_rejected() {
+        let cfg = ResponsesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            headers: ResponsesFormatHeaders {
+                format: default_format_header(),
+                model: Some("x-api-key".into()),
+                stream: default_stream_header(),
+                mode: default_mode_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("x-api-key"),
+            "x-api-key promotion header should be rejected: {err}"
+        );
+    }
+
+    #[test]
     fn build_config_unrelated_internal_header_rejected() {
         let cfg = ResponsesFormatConfig {
             on_invalid: OnInvalidBehavior::default_continue(),
@@ -262,6 +307,54 @@ extra: true
         assert!(
             err.to_string().contains("x-praxis-route"),
             "unrelated x-praxis-* promotion header should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_model_header_rejects_format_routing_fact() {
+        let cfg = ResponsesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            headers: ResponsesFormatHeaders {
+                format: default_format_header(),
+                model: Some("x-praxis-ai-format".into()),
+                stream: default_stream_header(),
+                mode: default_mode_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("x-praxis-ai-format"),
+            "client-derived model must not overwrite format routing: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_format_header_rejects_model_rewrite_fact() {
+        let cfg = ResponsesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            headers: ResponsesFormatHeaders {
+                format: Some("x-praxis-ai-effective-model".into()),
+                model: default_model_header(),
+                stream: default_stream_header(),
+                mode: default_mode_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("x-praxis-ai-effective-model"),
+            "format fact must not overwrite model-rewrite routing: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_accepts_dedicated_defaults() {
+        let cfg = ResponsesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            headers: ResponsesFormatHeaders::default(),
+        };
+        assert!(
+            build_config(cfg).is_ok(),
+            "dedicated classification defaults should remain allowed"
         );
     }
 
