@@ -22,11 +22,11 @@ Use with branch chains to route stateful and stateless requests to different clu
 | Field | Type | Required | Description |
 |-------|------|---------|-------------|
 | `on_invalid` | `continue` \| `reject` \| `error` | no | Behavior when the body cannot be classified. |
-| `headers` | ResponsesFormatHeaders | no | Header names for promoted classification facts. |
-| `headers.format` | string | no | Header name for the detected format (e.g. `openai_responses`, `openai_chat_completions`). |
-| `headers.model` | string | no | Header name for the extracted model value. |
-| `headers.stream` | string | no | Header name for the extracted stream flag. |
-| `headers.mode` | string | no | Header name for the computed mode (`stateless` or `stateful`). |
+| `headers` | ResponsesFormatHeaders | no | Header names for promoted classification facts. Must not be hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` names. |
+| `headers.format` | string | no | Header name for the detected format (e.g. `openai_responses`, `openai_chat_completions`). Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. |
+| `headers.model` | string | no | Header name for the extracted model value. Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. |
+| `headers.stream` | string | no | Header name for the extracted stream flag. Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. |
+| `headers.mode` | string | no | Header name for the computed mode (`stateless` or `stateful`). Must not be a hop-by-hop, framing, Host, credential, or unrelated internal `x-praxis-*` header. |
 
 ## Examples
 

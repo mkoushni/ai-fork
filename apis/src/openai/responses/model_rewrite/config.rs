@@ -39,6 +39,8 @@ pub(super) struct ModelRewriteConfig {
     pub default_model: Option<String>,
 
     /// Header names for promoted model values.
+    ///
+    /// `effective_model` and `original_model` must use distinct names.
     #[serde(default)]
     pub headers: ModelRewriteHeaders,
 
@@ -59,21 +61,22 @@ pub(super) struct ModelRewriteConfig {
 
 /// Configurable header names for promoted model values.
 ///
-/// Transport-controlled names (`content-length`, `host`, hop-by-hop,
-/// and proxy-auth headers) are rejected. The two fields must not share
-/// the same name.
+/// Transport, credential, and unrelated internal `x-praxis-*` names are
+/// rejected. The two fields must not share the same name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelRewriteHeaders {
     /// Header name for the effective (post-rewrite) model value.
     ///
-    /// Must not be a hop-by-hop, framing, Host, or proxy-auth header.
+    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` header. Must differ from `original_model`.
     #[serde(default = "default_effective_model_header")]
     pub effective_model: Option<String>,
 
     /// Header name for the original (pre-rewrite) model value.
     ///
-    /// Must not be a hop-by-hop, framing, Host, or proxy-auth header.
+    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` header. Must differ from `effective_model`.
     #[serde(default = "default_original_model_header")]
     pub original_model: Option<String>,
 }
@@ -152,7 +155,7 @@ pub(super) fn validate_config(cfg: &ModelRewriteConfig) -> Result<(), FilterErro
     Ok(())
 }
 
-/// Reject empty, invalid, transport-controlled, or duplicated promotion headers.
+/// Reject empty, invalid, unsafe, or duplicated promotion headers.
 fn validate_promotion_headers(headers: &ModelRewriteHeaders) -> Result<(), FilterError> {
     validate_header_name("effective_model", headers.effective_model.as_deref())?;
     validate_header_name("original_model", headers.original_model.as_deref())?;
@@ -194,31 +197,9 @@ fn validate_aliases(aliases: &HashMap<String, String>) -> Result<(), FilterError
     Ok(())
 }
 
-/// Validate a configured header name using the HTTP header-name parser.
+/// Validate a configured promotion header name.
 fn validate_header_name(field: &str, name: Option<&str>) -> Result<(), FilterError> {
-    let Some(name) = name else {
-        return Ok(());
-    };
-    if name.is_empty() {
-        return Err(format!("openai_responses_model_rewrite: '{field}' header name must not be empty").into());
-    }
-    let Ok(parsed) = http::HeaderName::from_bytes(name.as_bytes()) else {
-        return Err(
-            format!("openai_responses_model_rewrite: '{field}' header name is not a valid HTTP header name").into(),
-        );
-    };
-    reject_transport_promotion_header(field, parsed.as_str())
-}
-
-/// Reject hop-by-hop, framing, Host, and proxy-auth promotion targets.
-fn reject_transport_promotion_header(field: &str, name: &str) -> Result<(), FilterError> {
-    if crate::promotion::is_transport_controlled_header(name) {
-        return Err(format!(
-            "openai_responses_model_rewrite: '{field}' must not use transport or credential header '{name}'"
-        )
-        .into());
-    }
-    Ok(())
+    crate::promotion::validate_promotion_header("openai_responses_model_rewrite", field, name)
 }
 
 // -----------------------------------------------------------------------------
@@ -471,7 +452,7 @@ extra: true
     fn validate_header_name_rejects_content_length() {
         let err = validate_header_name("effective_model", Some("content-length")).unwrap_err();
         assert!(
-            err.to_string().contains("transport or credential header"),
+            err.to_string().contains("transport, credential, or internal header"),
             "content-length should be rejected: {err}"
         );
     }
@@ -482,6 +463,24 @@ extra: true
         assert!(
             err.to_string().contains("host"),
             "Host should be rejected as transport header: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_rejects_authorization() {
+        let err = validate_header_name("effective_model", Some("authorization")).unwrap_err();
+        assert!(
+            err.to_string().contains("authorization"),
+            "authorization should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_header_name_rejects_unrelated_internal_header() {
+        let err = validate_header_name("effective_model", Some("x-praxis-route")).unwrap_err();
+        assert!(
+            err.to_string().contains("x-praxis-route"),
+            "unrelated x-praxis-* promotion target should be rejected: {err}"
         );
     }
 

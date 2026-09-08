@@ -5,10 +5,7 @@
 
 use praxis_filter::{
     FilterError,
-    builtins::http::payload_processing::{
-        OnInvalidBehavior,
-        config_validation::{validate_header_name, validate_max_body_bytes},
-    },
+    builtins::http::payload_processing::{OnInvalidBehavior, config_validation::validate_max_body_bytes},
 };
 use serde::Deserialize;
 
@@ -33,18 +30,29 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576; // 1 MiB
 // -----------------------------------------------------------------------------
 
 /// Configurable header names for promoted classification facts.
+///
+/// Transport, credential, and unrelated internal `x-praxis-*` names are rejected.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AnthropicMessagesFormatHeaders {
     /// Header name for the detected format.
+    ///
+    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` header.
     #[serde(default = "default_format_header")]
     pub format: Option<String>,
 
     /// Header name for the extracted model value.
+    ///
+    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` header.
     #[serde(default = "default_model_header")]
     pub model: Option<String>,
 
     /// Header name for the extracted stream flag.
+    ///
+    /// Must not be a hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` header.
     #[serde(default = "default_stream_header")]
     pub stream: Option<String>,
 }
@@ -105,6 +113,9 @@ pub(crate) struct AnthropicMessagesFormatConfig {
     pub max_body_bytes: usize,
 
     /// Header names for promoted classification facts.
+    ///
+    /// Must not be hop-by-hop, framing, Host, credential, or unrelated
+    /// internal `x-praxis-*` names.
     #[serde(default)]
     pub headers: AnthropicMessagesFormatHeaders,
 }
@@ -122,9 +133,9 @@ fn default_max_body_bytes() -> usize {
 pub(crate) fn build_config(cfg: AnthropicMessagesFormatConfig) -> Result<AnthropicMessagesFormatConfig, FilterError> {
     validate_max_body_bytes("anthropic_messages_format", cfg.max_body_bytes)?;
 
-    validate_header_name("anthropic_messages_format", "format", cfg.headers.format.as_deref())?;
-    validate_header_name("anthropic_messages_format", "model", cfg.headers.model.as_deref())?;
-    validate_header_name("anthropic_messages_format", "stream", cfg.headers.stream.as_deref())?;
+    crate::promotion::validate_promotion_header("anthropic_messages_format", "format", cfg.headers.format.as_deref())?;
+    crate::promotion::validate_promotion_header("anthropic_messages_format", "model", cfg.headers.model.as_deref())?;
+    crate::promotion::validate_promotion_header("anthropic_messages_format", "stream", cfg.headers.stream.as_deref())?;
 
     Ok(cfg)
 }
@@ -243,6 +254,42 @@ extra: true
             },
         };
         assert!(build_config(cfg).is_ok());
+    }
+
+    #[test]
+    fn build_config_authorization_header_rejected() {
+        let cfg = AnthropicMessagesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            headers: AnthropicMessagesFormatHeaders {
+                format: default_format_header(),
+                model: Some("authorization".into()),
+                stream: default_stream_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("authorization"),
+            "authorization promotion header should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_unrelated_internal_header_rejected() {
+        let cfg = AnthropicMessagesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            headers: AnthropicMessagesFormatHeaders {
+                format: Some("x-praxis-route".into()),
+                model: default_model_header(),
+                stream: default_stream_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("x-praxis-route"),
+            "unrelated x-praxis-* promotion header should be rejected: {err}"
+        );
     }
 
     // -- null header disables promotion ---------------------------------------
