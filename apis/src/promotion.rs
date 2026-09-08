@@ -86,6 +86,8 @@ fn reject_unsafe_promotion_target(filter: &str, field: &str, raw: &str) -> Resul
 }
 
 #[cfg(test)]
+#[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
 
