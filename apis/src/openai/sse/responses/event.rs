@@ -187,6 +187,37 @@ impl ResponsesEvent {
         }
     }
 
+    /// Take ownership of the JSON payload after read-only consumers are done.
+    pub fn into_payload(self) -> Value {
+        match self {
+            Self::ResponseCreated(payload)
+            | Self::ResponseQueued(payload)
+            | Self::ResponseInProgress(payload)
+            | Self::ResponseCompleted(payload)
+            | Self::ResponseIncomplete(payload)
+            | Self::ResponseFailed(payload)
+            | Self::OutputItemAdded(payload)
+            | Self::OutputItemDone(payload)
+            | Self::ContentPartAdded(payload)
+            | Self::ContentPartDone(payload)
+            | Self::OutputTextDelta(payload)
+            | Self::OutputTextDone(payload)
+            | Self::OutputTextAnnotationAdded(payload)
+            | Self::FunctionCallArgumentsDelta(payload)
+            | Self::FunctionCallArgumentsDone(payload)
+            | Self::RefusalDelta(payload)
+            | Self::RefusalDone(payload)
+            | Self::ReasoningDelta(payload)
+            | Self::ReasoningDone(payload)
+            | Self::ReasoningSummaryTextDelta(payload)
+            | Self::ReasoningSummaryTextDone(payload)
+            | Self::ReasoningSummaryPartAdded(payload)
+            | Self::ReasoningSummaryPartDone(payload)
+            | Self::Error(payload)
+            | Self::Unknown { data: payload, .. } => payload,
+        }
+    }
+
     /// Return the event type string.
     pub fn event_type(&self) -> &str {
         match self {
@@ -555,6 +586,18 @@ mod tests {
                 "event_type() should roundtrip for '{event_type}'"
             );
         }
+    }
+
+    #[test]
+    fn into_payload_moves_owned_json() {
+        let data = json!({"id": "resp_1", "delta": "hello"});
+        let event = ResponsesEvent::from_event_type("response.output_text.delta", data.clone());
+        assert_eq!(event.payload(), &data, "payload() should borrow the owned JSON");
+        assert_eq!(
+            event.into_payload(),
+            data,
+            "into_payload() should move the JSON without cloning it first"
+        );
     }
 
     #[test]

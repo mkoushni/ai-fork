@@ -793,6 +793,43 @@ async fn logical_eos_without_terminal_emits_error() {
 }
 
 #[test]
+fn encode_sse_event_writes_compact_json_directly_into_output() {
+    let payload = json!({
+        "type": "response.output_text.delta",
+        "delta": "α".repeat(2048),
+        "sequence_number": 12,
+        "response_id": "resp_logical",
+        "output_index": 3
+    });
+    let json_bytes = serde_json::to_vec(&payload).unwrap();
+    let mut output = Vec::new();
+    super::encode_sse_event("response.output_text.delta", &payload, &mut output);
+
+    let prefix = b"event: response.output_text.delta\ndata: ";
+    let suffix = b"\n\n";
+    assert_eq!(
+        output.len(),
+        prefix.len() + json_bytes.len() + suffix.len(),
+        "logical-stream SSE must be framing plus compact JSON with no intermediate String"
+    );
+    assert_eq!(
+        &output[..prefix.len()],
+        prefix.as_slice(),
+        "SSE event name and data delimiter must be unchanged"
+    );
+    assert_eq!(
+        &output[prefix.len()..prefix.len() + json_bytes.len()],
+        json_bytes.as_slice(),
+        "payload JSON must be written with to_writer compact encoding"
+    );
+    assert_eq!(
+        &output[output.len() - suffix.len()..],
+        suffix.as_slice(),
+        "SSE event delimiter must remain a trailing blank line"
+    );
+}
+
+#[test]
 fn body_passes_through_unchanged() {
     let (filter, mut ctx) = make_armed_context();
     ctx.insert_filter_state(StreamEventsState {
