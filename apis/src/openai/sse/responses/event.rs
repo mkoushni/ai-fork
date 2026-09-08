@@ -590,13 +590,33 @@ mod tests {
 
     #[test]
     fn into_payload_moves_owned_json() {
-        let data = json!({"id": "resp_1", "delta": "hello"});
-        let event = ResponsesEvent::from_event_type("response.output_text.delta", data.clone());
-        assert_eq!(event.payload(), &data, "payload() should borrow the owned JSON");
+        let data = json!({"id": "resp_1", "delta": "x".repeat(4096)});
+        let borrowed = ResponsesEvent::from_event_type("response.output_text.delta", data.clone());
+        assert_eq!(borrowed.payload(), &data, "payload() should borrow the owned JSON");
+
+        let clone_event = ResponsesEvent::from_event_type("response.output_text.delta", data.clone());
+        let move_event = ResponsesEvent::from_event_type("response.output_text.delta", data.clone());
+        let clone_info = allocation_counter::measure(|| {
+            std::hint::black_box(clone_event.payload().clone());
+        });
+        let move_info = allocation_counter::measure(|| {
+            std::hint::black_box(move_event.into_payload());
+        });
+        assert!(
+            clone_info.bytes_total >= 4096,
+            "payload().clone() must deep-copy the delta string, allocated {}",
+            clone_info.bytes_total
+        );
+        assert!(
+            move_info.bytes_total < clone_info.bytes_total,
+            "into_payload() must move the JSON: clone={} bytes, move={} bytes",
+            clone_info.bytes_total,
+            move_info.bytes_total
+        );
         assert_eq!(
-            event.into_payload(),
+            ResponsesEvent::from_event_type("response.output_text.delta", data.clone()).into_payload(),
             data,
-            "into_payload() should move the JSON without cloning it first"
+            "into_payload() should yield the original JSON value"
         );
     }
 
