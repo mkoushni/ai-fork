@@ -10,6 +10,10 @@
 # buffered request body, checks `previous_tools` for cached
 # listings, calls `tools/list` via the `mcp_client` module, and
 # writes `mcp_tool_map` to `ResponsesState`.
+# For `stream: true`, runtime and response-processing failures are
+# returned as a Responses SSE lifecycle containing
+# `response.mcp_list_tools.failed` and terminal `response.failed` events.
+# Local request-policy failures such as SSRF blocking remain HTTP errors.
 #
 # Configured `connector_id` plus `defer_loading: true` is validated
 # here when the request also includes `tool_search`: the ID is resolved

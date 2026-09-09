@@ -11,6 +11,8 @@ Rejects the request with HTTP 400 before any callouts if two or more resolvable 
 
 Configured `connector_id` entries with `defer_loading: true` are accepted when the request also includes a `tool_search` tool. Those entries are resolved to an internal endpoint without an eager `tools/list` call; `connector_id`, the configured URL, and credentials are stripped from the outbound body. Deferred loading requires `openai_mcp_dispatch` inside an agentic loop. The first inference round keeps a sanitized `type: mcp` stub plus `tool_search` (an OpenAI-shaped hosted-tool backend); any later `tool_search_call` loads every pending deferred connector.
 
+For streaming requests, a runtime or response-processing failure from `tools/list` is returned as a successful SSE transport containing `response.mcp_list_tools.failed` and a terminal `response.failed` event. Local policy failures such as SSRF blocking remain HTTP error responses.
+
 ## Configuration
 
 | Field | Type | Required | Description |
