@@ -1247,6 +1247,7 @@ mod tests {
                 vec!["responses_agentic_loop"],
                 vec!["responses_to_chat_completions"],
                 vec!["responses_to_chat_completions"],
+                vec!["responses_to_chat_completions"],
             ]
         );
         assert_eq!(
@@ -1302,6 +1303,7 @@ mod tests {
                 "responses/chat-basic-stream",
                 "responses/chat-file-search",
                 "responses/chat-malformed-compaction",
+                "responses/chat-tool-echo",
                 "responses/chat-web-search",
                 "responses/irr-terminal-streaming",
                 "responses/native-basic-nonstream",
@@ -1436,6 +1438,10 @@ mod tests {
                 (
                     &"responses.chat.malformed_compaction".to_owned(),
                     &vec!["responses/chat-malformed-compaction".to_owned()]
+                ),
+                (
+                    &"responses.chat.tools.function_echo".to_owned(),
+                    &vec!["responses/chat-tool-echo".to_owned()]
                 ),
             ]
         );
