@@ -717,32 +717,37 @@ mod tests {
     }
 
     #[test]
-    fn default_produces_expected_values() {
+    fn default_produces_expected_scalar_values() {
         let state = ResponsesState::default();
         assert!(state.context_management.is_none());
         assert!(state.conversation.is_none());
-        assert!(state.include.is_empty());
-        assert!(state.input.is_empty());
         assert_eq!(state.iteration, 0);
         assert!(state.max_tool_calls.is_none());
-        assert!(state.mcp_tool_map.is_empty());
-        assert!(state.messages.is_empty());
-        assert!(state.output_items().is_empty());
         assert!(state.parallel_tool_calls);
-        assert!(state.persisted_messages.is_empty());
         assert!(state.previous_response_id.is_none());
-        assert!(state.previous_tools.is_empty());
         assert!(state.previous_usage.is_none());
         assert!(state.request_body.is_null());
         assert!(state.response_object.is_null());
+        assert_eq!(state.web_search_calls_executed, 0);
+        assert_eq!(state.tool_choice, json!("auto"));
+        assert!(state.usage.is_null());
+    }
+
+    #[test]
+    fn default_produces_empty_collections() {
+        let state = ResponsesState::default();
+        assert!(state.include.is_empty());
+        assert!(state.input.is_empty());
+        assert!(state.mcp_tool_map.is_empty());
+        assert!(state.messages.is_empty());
+        assert!(state.output_items().is_empty());
+        assert!(state.persisted_messages.is_empty());
+        assert!(state.previous_tools.is_empty());
         assert!(state.tool_calls.is_empty());
         assert!(state.tool_search_calls.is_empty());
         assert!(state.deferred_mcp.is_empty());
         assert!(state.web_search_calls.is_empty());
-        assert_eq!(state.web_search_calls_executed, 0);
-        assert_eq!(state.tool_choice, json!("auto"));
         assert!(state.tools.is_empty());
-        assert!(state.usage.is_null());
         assert!(state.accumulated_output.is_empty());
     }
 
