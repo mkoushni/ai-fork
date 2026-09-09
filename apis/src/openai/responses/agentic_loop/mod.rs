@@ -333,6 +333,7 @@ fn prepare_streamed_round(ctx: &mut HttpFilterContext<'_>, state: &mut Responses
     if !streamed_round_is_dispatchable(ctx, state) {
         collect_streaming_output_items(state);
         state.tool_calls.clear();
+        state.tool_search_calls.clear();
         state.web_search_calls.clear();
         set_action(ctx, ACTION_DONE)?;
         return Ok(false);
@@ -358,6 +359,7 @@ fn end_stream_with_error(
     message: &'static str,
 ) -> Result<(), FilterError> {
     state.tool_calls.clear();
+    state.tool_search_calls.clear();
     state.web_search_calls.clear();
     ctx.set_metadata("responses.stream_error_code", code);
     ctx.set_metadata("responses.stream_error_message", message);

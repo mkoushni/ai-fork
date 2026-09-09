@@ -389,6 +389,11 @@ fn incomplete_stream_does_not_dispatch_accumulated_tool_call() {
         "arguments": "{}",
         "status": "completed"
     }));
+    state.tool_search_calls.push(json!({
+        "type": "tool_search_call",
+        "id": "tsc_partial",
+        "status": "completed"
+    }));
     state.response_object = json!({
         "id": "resp_incomplete",
         "object": "response",
@@ -420,6 +425,14 @@ fn incomplete_stream_does_not_dispatch_accumulated_tool_call() {
     assert!(
         ctx.extensions.get::<ResponsesState>().unwrap().tool_calls.is_empty(),
         "a tool from a truncated stream must not remain dispatchable"
+    );
+    assert!(
+        ctx.extensions
+            .get::<ResponsesState>()
+            .unwrap()
+            .tool_search_calls
+            .is_empty(),
+        "a tool_search_call from a truncated stream must not remain dispatchable"
     );
     assert_eq!(
         ctx.extensions.get::<ResponsesState>().unwrap().accumulated_output[0]["id"],
@@ -548,6 +561,7 @@ fn multiple_streamed_function_calls_end_with_sse_error() {
         json!({"type": "function_call", "call_id": "call_1", "name": "first", "status": "completed"}),
         json!({"type": "function_call", "call_id": "call_2", "name": "second", "status": "completed"}),
     ];
+    state.tool_search_calls = vec![json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"})];
     state.response_object = json!({"id": "resp_multiple", "object": "response", "status": "completed", "output": []});
     ctx.set_metadata("responses.stream_completion", "terminal");
     ctx.extensions.insert(state);
@@ -566,6 +580,14 @@ fn multiple_streamed_function_calls_end_with_sse_error() {
     assert!(
         ctx.extensions.get::<ResponsesState>().unwrap().tool_calls.is_empty(),
         "invalid streamed calls must not remain dispatchable"
+    );
+    assert!(
+        ctx.extensions
+            .get::<ResponsesState>()
+            .unwrap()
+            .tool_search_calls
+            .is_empty(),
+        "invalid streamed tool_search_calls must not remain dispatchable"
     );
 }
 
@@ -631,6 +653,11 @@ fn streaming_iteration_limit_ends_with_sse_error() {
         "name": "must_not_run",
         "status": "completed"
     })];
+    state.tool_search_calls = vec![json!({
+        "type": "tool_search_call",
+        "id": "tsc_limit",
+        "status": "completed"
+    })];
     state.response_object = json!({"id": "resp_limit", "object": "response", "status": "completed", "output": []});
     ctx.set_metadata("responses.stream_completion", "terminal");
     ctx.extensions.insert(state);
@@ -649,6 +676,14 @@ fn streaming_iteration_limit_ends_with_sse_error() {
     assert!(
         ctx.extensions.get::<ResponsesState>().unwrap().tool_calls.is_empty(),
         "iteration-limit errors must not leave calls dispatchable"
+    );
+    assert!(
+        ctx.extensions
+            .get::<ResponsesState>()
+            .unwrap()
+            .tool_search_calls
+            .is_empty(),
+        "iteration-limit errors must not leave tool_search_calls dispatchable"
     );
 }
 
