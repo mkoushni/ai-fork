@@ -1688,7 +1688,9 @@ fn rewrite_tools_array_sanitizes_deferred_connectors() {
         "authorization": "Bearer secret",
         "headers": {"X-Token": "abc"},
         "defer_loading": true,
+        "server_description": "Corporate drive search",
         "allowed_tools": ["search"],
+        "allowed_callers": ["assistant"],
         "require_approval": "never"
     })];
 
@@ -1698,6 +1700,8 @@ fn rewrite_tools_array_sanitizes_deferred_connectors() {
     assert_eq!(rewritten[0]["type"], "mcp");
     assert_eq!(rewritten[0]["server_label"], "drive");
     assert_eq!(rewritten[0]["defer_loading"], true);
+    assert_eq!(rewritten[0]["server_description"], "Corporate drive search");
+    assert_eq!(rewritten[0]["allowed_callers"], serde_json::json!(["assistant"]));
     assert!(rewritten[0].get("connector_id").is_none());
     assert!(rewritten[0].get("server_url").is_none());
     assert!(rewritten[0].get("authorization").is_none());
@@ -1793,6 +1797,32 @@ fn mcp_tool_to_function_tool_prefers_input_schema_camel_case() {
     assert!(
         function_tool["parameters"]["properties"]["a"].is_object(),
         "inputSchema (camelCase) should take precedence"
+    );
+}
+
+/// Public listing items use Responses `input_schema`, never MCP `inputSchema`.
+#[test]
+fn mcp_list_tools_item_emits_responses_input_schema() {
+    let listing = mcp_list_tools_item(
+        "weather",
+        &[serde_json::json!({
+            "name": "get_weather",
+            "description": "Get weather",
+            "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}},
+            "annotations": {"readOnlyHint": true}
+        })],
+    );
+
+    assert_eq!(listing["type"], "mcp_list_tools");
+    assert_eq!(listing["server_label"], "weather");
+    let tool = &listing["tools"][0];
+    assert_eq!(tool["name"], "get_weather");
+    assert_eq!(tool["description"], "Get weather");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool.get("inputSchema").is_none(), "MCP camelCase must not leak: {tool}");
+    assert_eq!(
+        tool["input_schema"]["properties"]["city"]["type"], "string",
+        "listing tools must expose Responses input_schema"
     );
 }
 
@@ -3187,7 +3217,9 @@ connectors:
                 "connector_id": "c1",
                 "defer_loading": true,
                 "authorization": "Bearer secret",
+                "server_description": "Corporate drive search",
                 "allowed_tools": ["search"],
+                "allowed_callers": ["assistant"],
                 "require_approval": "never"
             }
         ]
@@ -3206,6 +3238,8 @@ connectors:
     assert_eq!(tools[1]["server_label"], "drive");
     assert_eq!(tools[1]["defer_loading"], true);
     assert_eq!(tools[1]["allowed_tools"], serde_json::json!(["search"]));
+    assert_eq!(tools[1]["allowed_callers"], serde_json::json!(["assistant"]));
+    assert_eq!(tools[1]["server_description"], "Corporate drive search");
     assert_eq!(tools[1]["require_approval"], "never");
     assert!(
         tools[1].get("connector_id").is_none(),
@@ -3315,6 +3349,19 @@ async fn discover_deferred_connectors_loads_filtered_tools_without_leaking_endpo
             .is_some_and(|id| id.starts_with("mcpl_") && !id.contains("weather")),
         "listing id should be opaque: {}",
         listing["id"]
+    );
+    let listed_tools = listing["tools"].as_array().expect("mcp_list_tools should list tools");
+    assert_eq!(listed_tools.len(), 1);
+    assert!(
+        listed_tools[0].get("inputSchema").is_none(),
+        "Responses listing tools must not expose MCP inputSchema: {}",
+        listed_tools[0]
+    );
+    assert_eq!(listed_tools[0]["name"], "get_weather");
+    assert!(
+        listed_tools[0].get("input_schema").is_some(),
+        "Responses listing tools require input_schema: {}",
+        listed_tools[0]
     );
     let dumped = serde_json::to_string(&state.request_body).unwrap();
     assert!(

@@ -1682,6 +1682,131 @@ fn tool_search_call_queued_for_deferred_discovery() {
 }
 
 #[test]
+fn incomplete_tool_search_call_is_not_queued_for_deferred_discovery() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "output": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_in_progress",
+                "status": "in_progress"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "an in-progress search must not reject the round"
+    );
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert!(
+        state.tool_search_calls.is_empty(),
+        "only completed tool_search_call items may trigger tools/list"
+    );
+    assert!(
+        state
+            .accumulated_output
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_in_progress")),
+        "the in-progress item remains client-visible in accumulated output"
+    );
+}
+
+#[test]
+fn streamed_tool_search_call_is_queued_for_deferred_discovery() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": "test",
+        "stream": true
+    }));
+    state.response_object = json!({
+        "id": "resp_search",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "tool_search_call",
+            "id": "tsc_1",
+            "status": "completed"
+        }]
+    });
+    ctx.set_metadata("responses.stream_completion", "terminal");
+    ctx.extensions.insert(state);
+
+    let action = filter.on_response_body(&mut ctx, &mut None, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "a streamed tool_search_call round must yield Continue while it loops for discovery"
+    );
+    assert_action(&ctx, "loop");
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert_eq!(
+        state.tool_search_calls.len(),
+        1,
+        "streamed tool_search_call must be visible to openai_mcp_dispatch"
+    );
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|m| m.get("type").and_then(Value::as_str) == Some("tool_search_call")),
+        "a hosted tool_search_call is not a valid OpenResponses input item and must not \
+         enter model-facing messages"
+    );
+}
+
+#[test]
+fn streamed_incomplete_tool_search_call_is_not_queued() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": "test",
+        "stream": true
+    }));
+    state.response_object = json!({
+        "id": "resp_search",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "tool_search_call",
+            "id": "tsc_incomplete",
+            "status": "incomplete"
+        }]
+    });
+    ctx.set_metadata("responses.stream_completion", "terminal");
+    ctx.extensions.insert(state);
+
+    let action = filter.on_response_body(&mut ctx, &mut None, true).unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert_action(&ctx, "done");
+    assert!(
+        ctx.extensions
+            .get::<ResponsesState>()
+            .unwrap()
+            .tool_search_calls
+            .is_empty(),
+        "incomplete streamed searches must not trigger tools/list"
+    );
+}
+
+#[test]
 fn web_search_call_does_not_count_as_function_call_for_limit() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");

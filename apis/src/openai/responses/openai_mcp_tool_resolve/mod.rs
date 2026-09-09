@@ -19,7 +19,9 @@
 //! requires `openai_mcp_dispatch` inside an agentic loop. The first
 //! inference round keeps a sanitized `type: mcp` stub plus
 //! `tool_search`; any later `tool_search_call` loads every pending
-//! deferred connector.
+//! deferred connector. Streaming deferred `tools/list` failures use the
+//! same header-phase SSE lifecycle as the initial resolver
+//! (`response.mcp_list_tools.failed` then `response.failed`).
 //!
 //! # Function name encoding
 //!
@@ -342,12 +344,7 @@ impl HttpFilter for McpToolResolveFilter {
         // `Continue`. Consuming the stash exactly once yields the terminal SSE;
         // routing it through the response phase lets `openai_stream_events` and
         // `openai_response_store` observe and persist the failed response.
-        if let Some(pending) = ctx.remove_filter_state::<PendingListToolsFailure>() {
-            return Ok(FilterAction::TerminalResponse(Box::new(
-                build_list_tools_failure_response(ctx, &pending),
-            )));
-        }
-        Ok(FilterAction::Continue)
+        Ok(consume_pending_list_tools_failure(ctx).unwrap_or(FilterAction::Continue))
     }
 
     async fn on_request_body(
@@ -653,9 +650,10 @@ fn resolve_error_status(err: &ResolveError) -> (u16, &'static str) {
 
 /// Map a [`ResolveError`] to an HTTP rejection.
 ///
-/// Used by `openai_mcp_dispatch` after deferred connector discovery, which
-/// runs in a later request-body phase and cannot use the header-phase SSE
-/// stash from [`resolve_error_action`].
+/// Non-streaming failures and local request-policy failures (SSRF, duplicates)
+/// reject immediately. Streaming `tools/list` runtime failures use
+/// [`resolve_error_action`] so the header phase can emit the canonical SSE
+/// lifecycle.
 pub(crate) fn resolve_error_rejection(err: &ResolveError, streaming: bool) -> FilterAction {
     let (status, error_type) = resolve_error_status(err);
     let msg = err.to_string();
@@ -670,11 +668,14 @@ pub(crate) fn resolve_error_rejection(err: &ResolveError, streaming: bool) -> Fi
 /// [`PendingListToolsFailure`] descriptor is stashed and `Continue` is
 /// returned, because a `TerminalResponse` produced here (a body-phase hook)
 /// would be swallowed as `Continue` by the pipeline. The header-phase
-/// [`McpToolResolveFilter::on_request`] consumes the stash and emits the
+/// [`consume_pending_list_tools_failure`] consumes the stash and emits the
 /// terminal SSE so the response phase can observe and persist it. All other
 /// failures -- and every local request-policy failure such as SSRF -- are
 /// rejected immediately via [`FilterAction::Reject`].
-fn resolve_error_action(
+///
+/// Called from both the initial resolver and later-round deferred discovery
+/// in `openai_mcp_dispatch`.
+pub(crate) fn resolve_error_action(
     ctx: &mut HttpFilterContext<'_>,
     err: &ResolveError,
     streaming: bool,
@@ -693,6 +694,19 @@ fn resolve_error_action(
         return FilterAction::Continue;
     }
     resolve_error_rejection(err, streaming)
+}
+
+/// Consume a stashed streaming listing failure and emit the terminal SSE.
+///
+/// Used from the header-phase `on_request` of both `openai_mcp_tool_resolve`
+/// (initial eager listing) and `openai_mcp_dispatch` (later-round deferred
+/// discovery). Filter state is keyed by the stashing filter's pipeline index,
+/// so each filter consumes only its own descriptor.
+pub(crate) fn consume_pending_list_tools_failure(ctx: &mut HttpFilterContext<'_>) -> Option<FilterAction> {
+    let pending = ctx.remove_filter_state::<PendingListToolsFailure>()?;
+    Some(FilterAction::TerminalResponse(Box::new(
+        build_list_tools_failure_response(ctx, &pending),
+    )))
 }
 
 /// Compact descriptor of a deferred streaming `tools/list` runtime failure.
@@ -1499,8 +1513,10 @@ fn sanitize_deferred_connector_tool(tool: serde_json::Value) -> serde_json::Valu
     for key in [
         "type",
         "server_label",
+        "server_description",
         "defer_loading",
         "allowed_tools",
+        "allowed_callers",
         "require_approval",
     ] {
         if let Some(value) = obj.get(key) {
@@ -1896,29 +1912,34 @@ struct PreparedDeferredListing {
 }
 
 /// Call `tools/list` for every deferred connector without mutating state.
+///
+/// Independent servers are listed concurrently so total latency is bounded by
+/// the slowest connector rather than the sum of per-server timeouts. Commit
+/// remains transactional in [`discover_deferred_connectors`].
 async fn prepare_deferred_listings(
     pending: &[DeferredMcpConnector],
 ) -> Result<Vec<PreparedDeferredListing>, ResolveError> {
-    let mut prepared = Vec::with_capacity(pending.len());
-    for connector in pending {
-        let listing = list_deferred_connector(connector).await?;
-        let entry = deferred_entry_view(connector);
-        let allowed = extract_allowed_tools(&entry);
-        let filtered = apply_allowed_tools_filter(listing, &allowed);
-        let functions: Vec<serde_json::Value> = filtered
-            .iter()
-            .map(|def| mcp_tool_to_function_tool(&connector.server_label, def))
-            .collect();
-        let listing_item = mcp_list_tools_item(&connector.server_label, &filtered);
-        prepared.push(PreparedDeferredListing {
-            entry,
-            filtered,
-            functions,
-            listing_item,
-            server_label: connector.server_label.clone(),
-        });
-    }
-    Ok(prepared)
+    futures::future::try_join_all(pending.iter().map(prepare_deferred_listing)).await
+}
+
+/// List and rewrite one deferred connector without mutating shared state.
+async fn prepare_deferred_listing(connector: &DeferredMcpConnector) -> Result<PreparedDeferredListing, ResolveError> {
+    let listing = list_deferred_connector(connector).await?;
+    let entry = deferred_entry_view(connector);
+    let allowed = extract_allowed_tools(&entry);
+    let filtered = apply_allowed_tools_filter(listing, &allowed);
+    let functions: Vec<serde_json::Value> = filtered
+        .iter()
+        .map(|def| mcp_tool_to_function_tool(&connector.server_label, def))
+        .collect();
+    let listing_item = mcp_list_tools_item(&connector.server_label, &filtered);
+    Ok(PreparedDeferredListing {
+        entry,
+        filtered,
+        functions,
+        listing_item,
+        server_label: connector.server_label.clone(),
+    })
 }
 
 /// Apply deferred listings after collision and body-size checks succeed.
@@ -2049,13 +2070,34 @@ fn deferred_entry_view(connector: &DeferredMcpConnector) -> serde_json::Value {
 }
 
 /// Public `mcp_list_tools` item with no URL, credentials, or connector id.
+///
+/// MCP `tools/list` returns `inputSchema`; the Responses item schema requires
+/// `input_schema`. Map each listed tool onto the public shape so typed SDKs
+/// can parse a successful deferred listing.
 fn mcp_list_tools_item(server_label: &str, tools: &[serde_json::Value]) -> serde_json::Value {
     serde_json::json!({
         "id": mcp_list_tools_id(server_label),
         "type": "mcp_list_tools",
         "server_label": server_label,
-        "tools": tools,
+        "tools": tools.iter().map(mcp_listing_tool_for_responses).collect::<Vec<_>>(),
     })
+}
+
+/// Map one MCP tool definition onto the Responses `mcp_list_tools` tool shape.
+fn mcp_listing_tool_for_responses(definition: &serde_json::Value) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for key in ["name", "description", "annotations"] {
+        if let Some(value) = definition.get(key) {
+            obj.insert(key.to_owned(), value.clone());
+        }
+    }
+    let schema = definition
+        .get("input_schema")
+        .or_else(|| definition.get("inputSchema"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+    obj.insert("input_schema".to_owned(), schema);
+    serde_json::Value::Object(obj)
 }
 
 /// Opaque listing id that does not embed the client-supplied label.

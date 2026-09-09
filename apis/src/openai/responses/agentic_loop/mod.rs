@@ -493,7 +493,7 @@ fn collect_output_items(response: &Value, state: &mut ResponsesState) {
     for item in output {
         state.accumulated_output.push(item.clone());
         match item.get("type").and_then(Value::as_str) {
-            Some("function_call") if item.get("status").and_then(Value::as_str) == Some("completed") => {
+            Some("function_call") if is_completed_output_item(item) => {
                 state.tool_calls.push(item.clone());
                 state.messages.push(item.clone());
                 state.persisted_messages.push(item.clone());
@@ -511,7 +511,10 @@ fn collect_output_items(response: &Value, state: &mut ResponsesState) {
                 state.web_search_calls.push(item.clone());
                 state.persisted_messages.push(item.clone());
             },
-            Some("tool_search_call") => {
+            Some("tool_search_call") if is_completed_output_item(item) => {
+                // Mirror function-call handling: only a completed search may
+                // trigger deferred `tools/list`. In-progress or incomplete
+                // items stay in `accumulated_output` without network effects.
                 state.tool_search_calls.push(item.clone());
                 state.persisted_messages.push(item.clone());
             },
@@ -544,11 +547,25 @@ fn collect_streaming_output_items(state: &mut ResponsesState) {
                 state.accumulated_output.push(item.clone());
                 state.persisted_messages.push(item);
             },
+            Some("tool_search_call") if is_completed_output_item(&item) => {
+                // Mirror the buffered collector: a completed hosted
+                // `tool_search_call` is not a valid OpenResponses input item, so
+                // it must not enter `messages`. `openai_mcp_dispatch` consumes
+                // `tool_search_calls` to list deferred connectors.
+                state.tool_search_calls.push(item.clone());
+                state.accumulated_output.push(item.clone());
+                state.persisted_messages.push(item);
+            },
             _ => {
                 state.accumulated_output.push(item);
             },
         }
     }
+}
+
+/// Whether an output item is a completed tool or search call.
+fn is_completed_output_item(item: &Value) -> bool {
+    item.get("status").and_then(Value::as_str) == Some("completed")
 }
 
 /// Check whether a parsed response is a valid Responses API output.

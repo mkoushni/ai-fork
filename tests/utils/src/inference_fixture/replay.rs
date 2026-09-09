@@ -407,6 +407,10 @@ fn validate_replay_filters(config: &Config) -> Result<(), FixtureError> {
 }
 
 /// Whether a filter type is known to be fully contained within replay.
+///
+/// `openai_mcp_tool_resolve` is included so deferred-connector sanitization
+/// (no `tools/list` callout) can be replayed. Eager listing still requires a
+/// live MCP endpoint, so those example configs fail outbound-target checks.
 fn is_replay_contained_filter(filter_type: &str) -> bool {
     matches!(
         filter_type,
@@ -423,6 +427,8 @@ fn is_replay_contained_filter(filter_type: &str) -> bool {
             | "openai_response_store"
             | "openai_responses_rehydrate"
             | "openai_stream_events"
+            | "openai_tool_parse"
+            | "openai_mcp_tool_resolve"
             | "responses_to_chat_completions"
             | "router"
             | "load_balancer"
@@ -2621,8 +2627,6 @@ mod tests {
         }
 
         for path in [
-            "openai/responses/agentic-loop.yaml",
-            "openai/responses/mcp-tool-resolve.yaml",
             "openai/responses/mcp-dispatch.yaml",
             "openai/responses/file-resolve.yaml",
             "openai/responses/compact.yaml",
@@ -2656,6 +2660,13 @@ mod tests {
         let source = replay_config_source("openai/responses/agentic-loop-fixture.yaml");
         let config = Config::from_yaml(&source).expect("agentic-loop-fixture config should parse");
         validate_replay_filters(&config).expect("agentic-loop-fixture contains only replay-safe filters");
+    }
+
+    #[test]
+    fn replay_config_allows_deferred_mcp_fixture() {
+        let source = replay_config_source("openai/responses/agentic-loop-deferred-mcp-fixture.yaml");
+        let config = Config::from_yaml(&source).expect("deferred MCP fixture config should parse");
+        validate_replay_filters(&config).expect("deferred MCP fixture contains only replay-safe filters");
     }
 
     #[test]
