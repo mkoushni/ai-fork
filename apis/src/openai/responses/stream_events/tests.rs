@@ -1774,3 +1774,65 @@ async fn on_response_preserves_content_length_when_not_armed() {
         "Content-Length should be preserved when filter is not armed"
     );
 }
+
+#[tokio::test]
+async fn on_request_body_caps_upstream_read_timeout_at_stream_budget() {
+    use std::{sync::Arc, time::Duration};
+
+    use praxis_core::connectivity::{ConnectionOptions, Upstream};
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str("timeout_secs: 1").unwrap();
+    let filter = OpenaiStreamEventsFilter::from_config(&yaml).unwrap();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(Box::leak(Box::new(req)));
+    ctx.set_metadata("openai_responses_format.format", "openai_responses".to_owned());
+    ctx.set_metadata("openai_responses_format.stream", "true".to_owned());
+    ctx.current_filter_id = Some(0);
+    ctx.upstream = Some(Upstream {
+        address: Arc::from("127.0.0.1:9"),
+        authority: None,
+        tls: None,
+        connection: Arc::new(ConnectionOptions::default()),
+    });
+
+    filter.on_request(&mut ctx).await.unwrap();
+    filter.on_request_body(&mut ctx, &mut None, true).await.unwrap();
+
+    assert_eq!(
+        ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
+        Some(Duration::from_secs(1)),
+        "armed stream_events must cap the selected peer read timeout so idle backends wake"
+    );
+}
+
+#[tokio::test]
+async fn on_request_body_keeps_a_tighter_cluster_read_timeout() {
+    use std::{sync::Arc, time::Duration};
+
+    use praxis_core::connectivity::{ConnectionOptions, Upstream};
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str("timeout_secs: 300").unwrap();
+    let filter = OpenaiStreamEventsFilter::from_config(&yaml).unwrap();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(Box::leak(Box::new(req)));
+    ctx.set_metadata("openai_responses_format.format", "openai_responses".to_owned());
+    ctx.set_metadata("openai_responses_format.stream", "true".to_owned());
+    ctx.current_filter_id = Some(0);
+    ctx.upstream = Some(Upstream {
+        address: Arc::from("127.0.0.1:9"),
+        authority: None,
+        tls: None,
+        connection: Arc::new(ConnectionOptions {
+            read_timeout: Some(Duration::from_millis(250)),
+            ..ConnectionOptions::default()
+        }),
+    });
+
+    filter.on_request(&mut ctx).await.unwrap();
+
+    assert_eq!(
+        ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
+        Some(Duration::from_millis(250)),
+        "a tighter cluster read timeout must not be relaxed to timeout_secs"
+    );
+}
