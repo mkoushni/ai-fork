@@ -200,6 +200,16 @@ pub(crate) fn build_config(cfg: McpConfig) -> Result<McpConfig, FilterError> {
         cfg.headers.session_present.as_deref(),
         "x-praxis-mcp-session-present",
     )?;
+    praxis_ai_apis::promotion::reject_duplicate_promotion_fields(
+        "mcp",
+        &[
+            ("method", cfg.headers.method.as_deref()),
+            ("name", cfg.headers.name.as_deref()),
+            ("kind", cfg.headers.kind.as_deref()),
+            ("protocol_version", cfg.headers.protocol_version.as_deref()),
+            ("session_present", cfg.headers.session_present.as_deref()),
+        ],
+    )?;
     Ok(cfg)
 }
 

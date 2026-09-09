@@ -950,6 +950,23 @@ fn custom_protocol_version_header_parses() {
     );
 }
 
+#[test]
+fn build_config_rejects_duplicate_promotion_headers() {
+    let cfg: McpConfig = serde_yaml::from_str(
+        r#"
+        headers:
+          method: x-shared
+          name: X-Shared
+        "#,
+    )
+    .unwrap();
+    let err = build_config(cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("same header name"),
+        "duplicate MCP promotion headers should be rejected: {err}"
+    );
+}
+
 #[tokio::test]
 async fn custom_protocol_version_header_is_promoted() {
     let filter = make_filter(r#"{"headers": {"protocol_version": "x-custom-mcp-ver"}}"#);

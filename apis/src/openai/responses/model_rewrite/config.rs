@@ -164,21 +164,13 @@ pub(super) fn validate_config(cfg: &ModelRewriteConfig) -> Result<(), FilterErro
 fn validate_promotion_headers(headers: &ModelRewriteHeaders) -> Result<(), FilterError> {
     validate_header_name("effective_model", headers.effective_model.as_deref())?;
     validate_header_name("original_model", headers.original_model.as_deref())?;
-    reject_duplicate_promotion_headers(headers.effective_model.as_deref(), headers.original_model.as_deref())
-}
-
-/// Reject configuring the same promotion header for both model values.
-fn reject_duplicate_promotion_headers(effective: Option<&str>, original: Option<&str>) -> Result<(), FilterError> {
-    let (Some(effective), Some(original)) = (effective, original) else {
-        return Ok(());
-    };
-    if effective.eq_ignore_ascii_case(original) {
-        return Err(
-            "openai_responses_model_rewrite: 'effective_model' and 'original_model' must not use the same header name"
-                .into(),
-        );
-    }
-    Ok(())
+    crate::promotion::reject_duplicate_promotion_fields(
+        "openai_responses_model_rewrite",
+        &[
+            ("effective_model", headers.effective_model.as_deref()),
+            ("original_model", headers.original_model.as_deref()),
+        ],
+    )
 }
 
 /// Validate alias map entries.

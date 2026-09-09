@@ -138,7 +138,7 @@ fn is_blocked_forward_header(name: &str) -> bool {
         || name.starts_with("x-ext-agent-")
         || name.starts_with("x-mcp-")
         || name.starts_with("x-a2a-")
-        || crate::promotion::is_transport_controlled_header(name)
+        || crate::promotion::is_transport_controlled_header_lowercase(name)
 }
 
 // -----------------------------------------------------------------------------

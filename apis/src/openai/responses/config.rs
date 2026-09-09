@@ -131,32 +131,29 @@ pub(crate) struct ResponsesFormatConfig {
 
 /// Validate the parsed configuration.
 pub(crate) fn build_config(cfg: ResponsesFormatConfig) -> Result<ResponsesFormatConfig, FilterError> {
-    crate::promotion::validate_dedicated_promotion_header(
-        "openai_responses_format",
-        "format",
-        cfg.headers.format.as_deref(),
-        &["x-praxis-ai-format"],
-    )?;
-    crate::promotion::validate_dedicated_promotion_header(
-        "openai_responses_format",
-        "model",
-        cfg.headers.model.as_deref(),
-        &["x-praxis-ai-model"],
-    )?;
-    crate::promotion::validate_dedicated_promotion_header(
-        "openai_responses_format",
-        "stream",
-        cfg.headers.stream.as_deref(),
-        &["x-praxis-ai-stream"],
-    )?;
-    crate::promotion::validate_dedicated_promotion_header(
-        "openai_responses_format",
-        "mode",
-        cfg.headers.mode.as_deref(),
-        &["x-praxis-responses-mode"],
-    )?;
-
+    validate_responses_format_headers(&cfg.headers)?;
     Ok(cfg)
+}
+
+/// Validate dedicated names and reject collisions across header fields.
+fn validate_responses_format_headers(headers: &ResponsesFormatHeaders) -> Result<(), FilterError> {
+    for (field, name, dedicated) in [
+        ("format", headers.format.as_deref(), "x-praxis-ai-format"),
+        ("model", headers.model.as_deref(), "x-praxis-ai-model"),
+        ("stream", headers.stream.as_deref(), "x-praxis-ai-stream"),
+        ("mode", headers.mode.as_deref(), "x-praxis-responses-mode"),
+    ] {
+        crate::promotion::validate_dedicated_promotion_header("openai_responses_format", field, name, &[dedicated])?;
+    }
+    crate::promotion::reject_duplicate_promotion_fields(
+        "openai_responses_format",
+        &[
+            ("format", headers.format.as_deref()),
+            ("model", headers.model.as_deref()),
+            ("stream", headers.stream.as_deref()),
+            ("mode", headers.mode.as_deref()),
+        ],
+    )
 }
 
 // -----------------------------------------------------------------------------
@@ -355,6 +352,24 @@ extra: true
         assert!(
             build_config(cfg).is_ok(),
             "dedicated classification defaults should remain allowed"
+        );
+    }
+
+    #[test]
+    fn build_config_rejects_duplicate_promotion_headers() {
+        let cfg = ResponsesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            headers: ResponsesFormatHeaders {
+                format: Some("x-foo".into()),
+                model: Some("X-Foo".into()),
+                stream: Some("x-praxis-ai-stream".into()),
+                mode: Some("x-praxis-responses-mode".into()),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("same header name"),
+            "duplicate format and model headers should be rejected: {err}"
         );
     }
 

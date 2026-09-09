@@ -138,27 +138,27 @@ fn default_max_body_bytes() -> usize {
 /// Validate the parsed configuration.
 pub(crate) fn build_config(cfg: AnthropicMessagesFormatConfig) -> Result<AnthropicMessagesFormatConfig, FilterError> {
     validate_max_body_bytes("anthropic_messages_format", cfg.max_body_bytes)?;
-
-    crate::promotion::validate_dedicated_promotion_header(
-        "anthropic_messages_format",
-        "format",
-        cfg.headers.format.as_deref(),
-        &["x-praxis-ai-format"],
-    )?;
-    crate::promotion::validate_dedicated_promotion_header(
-        "anthropic_messages_format",
-        "model",
-        cfg.headers.model.as_deref(),
-        &["x-praxis-ai-model"],
-    )?;
-    crate::promotion::validate_dedicated_promotion_header(
-        "anthropic_messages_format",
-        "stream",
-        cfg.headers.stream.as_deref(),
-        &["x-praxis-ai-stream"],
-    )?;
-
+    validate_anthropic_format_headers(&cfg.headers)?;
     Ok(cfg)
+}
+
+/// Validate dedicated names and reject collisions across header fields.
+fn validate_anthropic_format_headers(headers: &AnthropicMessagesFormatHeaders) -> Result<(), FilterError> {
+    for (field, name, dedicated) in [
+        ("format", headers.format.as_deref(), "x-praxis-ai-format"),
+        ("model", headers.model.as_deref(), "x-praxis-ai-model"),
+        ("stream", headers.stream.as_deref(), "x-praxis-ai-stream"),
+    ] {
+        crate::promotion::validate_dedicated_promotion_header("anthropic_messages_format", field, name, &[dedicated])?;
+    }
+    crate::promotion::reject_duplicate_promotion_fields(
+        "anthropic_messages_format",
+        &[
+            ("format", headers.format.as_deref()),
+            ("model", headers.model.as_deref()),
+            ("stream", headers.stream.as_deref()),
+        ],
+    )
 }
 
 // -----------------------------------------------------------------------------
@@ -364,6 +364,24 @@ extra: true
         assert!(
             err.to_string().contains("x-praxis-ai-effective-model"),
             "format fact must not overwrite model-rewrite routing: {err}"
+        );
+    }
+
+    #[test]
+    fn build_config_rejects_duplicate_promotion_headers() {
+        let cfg = AnthropicMessagesFormatConfig {
+            on_invalid: OnInvalidBehavior::default_continue(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            headers: AnthropicMessagesFormatHeaders {
+                format: Some("x-foo".into()),
+                model: Some("X-Foo".into()),
+                stream: default_stream_header(),
+            },
+        };
+        let err = build_config(cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("same header name"),
+            "duplicate format and model headers should be rejected: {err}"
         );
     }
 

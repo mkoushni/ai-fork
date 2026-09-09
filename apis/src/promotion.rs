@@ -39,8 +39,15 @@ const MODEL_IDENTITY_HEADERS: &[&str] = &["x-praxis-ai-effective-model", "x-prax
 /// Composes [`crate::http_hop::is_hop_by_hop`] with `Host` and
 /// `Content-Length`, which are transport-controlled but not hop-by-hop.
 pub fn is_transport_controlled_header(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name == "content-length" || name == "host" || crate::http_hop::is_hop_by_hop(&name)
+    is_transport_controlled_header_lowercase(&name.to_ascii_lowercase())
+}
+
+/// Like [`is_transport_controlled_header`], but `name` must already be a
+/// lowercase HTTP field name, as produced by
+/// [`http::HeaderName::as_str`].
+#[must_use]
+pub fn is_transport_controlled_header_lowercase(name: &str) -> bool {
+    name == "content-length" || name == "host" || crate::http_hop::is_hop_by_hop(name)
 }
 
 /// Whether `name` is known to carry credentials or provider API keys.
@@ -48,8 +55,13 @@ pub fn is_transport_controlled_header(name: &str) -> bool {
 /// Shared with inference-fixture sanitization so promotion targets and
 /// recorded-header stripping cannot drift.
 pub fn is_credential_header(name: &str) -> bool {
+    is_credential_header_lowercase(&name.to_ascii_lowercase())
+}
+
+/// Like [`is_credential_header`], but `name` must already be lowercase.
+fn is_credential_header_lowercase(name: &str) -> bool {
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        name,
         "authorization"
             | "proxy-authorization"
             | "cookie"
@@ -129,13 +141,39 @@ pub fn validate_dedicated_promotion_header(
     reject_unsafe_promotion_target(filter, field, name, dedicated, &[])
 }
 
+/// Reject two configured promotion fields that resolve to the same header.
+///
+/// `None` entries are skipped. Comparison is ASCII case-insensitive.
+///
+/// # Errors
+///
+/// Returns [`FilterError`] when two named fields share a header.
+pub fn reject_duplicate_promotion_fields(filter: &str, fields: &[(&str, Option<&str>)]) -> Result<(), FilterError> {
+    let mut seen: Vec<(&str, String)> = Vec::new();
+    for &(field, name) in fields {
+        let Some(raw) = name else {
+            continue;
+        };
+        let normalized = raw.to_ascii_lowercase();
+        if let Some(&(other, _)) = seen.iter().find(|(_, existing)| existing == &normalized) {
+            return Err(format!("{filter}: '{field}' and '{other}' must not use the same header name").into());
+        }
+        seen.push((field, normalized));
+    }
+    Ok(())
+}
+
 /// Whether `name` is unsafe for the given dedicated names and prefixes.
 fn is_unsafe_promotion_target(name: &str, dedicated: &[&str], prefixes: &[&str]) -> bool {
-    let name = name.to_ascii_lowercase();
-    if is_transport_controlled_header(&name) || is_credential_header(&name) {
+    is_unsafe_promotion_target_lowercase(&name.to_ascii_lowercase(), dedicated, prefixes)
+}
+
+/// Like [`is_unsafe_promotion_target`], but `name` must already be lowercase.
+fn is_unsafe_promotion_target_lowercase(name: &str, dedicated: &[&str], prefixes: &[&str]) -> bool {
+    if is_transport_controlled_header_lowercase(name) || is_credential_header_lowercase(name) {
         return true;
     }
-    if dedicated.iter().any(|allowed| allowed.eq_ignore_ascii_case(&name)) {
+    if dedicated.iter().any(|allowed| allowed.eq_ignore_ascii_case(name)) {
         return false;
     }
     if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
@@ -156,7 +194,7 @@ fn reject_unsafe_promotion_target(
         return Ok(());
     };
     let normalized = raw.to_ascii_lowercase();
-    if is_unsafe_promotion_target(&normalized, dedicated, prefixes) {
+    if is_unsafe_promotion_target_lowercase(&normalized, dedicated, prefixes) {
         return Err(format!(
             "{filter}: '{field}' must not use transport, credential, or internal header '{normalized}'"
         )
@@ -384,6 +422,40 @@ mod tests {
         assert!(
             !is_credential_header("x-custom-model"),
             "custom headers are not credentials"
+        );
+    }
+
+    #[test]
+    fn transport_controlled_lowercase_requires_normalized_input() {
+        assert!(
+            is_transport_controlled_header_lowercase("content-length"),
+            "lowercase transport names must match without allocating"
+        );
+        assert!(
+            !is_transport_controlled_header_lowercase("Content-Length"),
+            "mixed-case input is the caller's responsibility"
+        );
+        assert!(
+            is_transport_controlled_header("Content-Length"),
+            "the allocating wrapper must still accept mixed case"
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_promotion_fields_is_case_insensitive() {
+        let err = reject_duplicate_promotion_fields("test", &[("format", Some("x-foo")), ("model", Some("X-Foo"))])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("same header name"),
+            "duplicate promotion fields should be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_promotion_fields_skips_none() {
+        assert!(
+            reject_duplicate_promotion_fields("test", &[("format", Some("x-foo")), ("model", None)]).is_ok(),
+            "disabled fields must not collide with configured names"
         );
     }
 }
