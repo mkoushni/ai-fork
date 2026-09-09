@@ -650,15 +650,16 @@ fn resolve_error_status(err: &ResolveError) -> (u16, &'static str) {
 
 /// Map a [`ResolveError`] to an HTTP rejection.
 ///
-/// Non-streaming failures and local request-policy failures (SSRF, duplicates)
-/// reject immediately. Streaming `tools/list` runtime failures use
+/// Pre-commitment failures (including `stream: true` SSRF and other local
+/// request-policy errors) reject immediately with the JSON `{"error":{...}}`
+/// envelope. Streaming `tools/list` runtime failures use
 /// [`resolve_error_action`] so the header phase can emit the canonical SSE
 /// lifecycle.
-pub(crate) fn resolve_error_rejection(err: &ResolveError, streaming: bool) -> FilterAction {
+pub(crate) fn resolve_error_rejection(err: &ResolveError) -> FilterAction {
     let (status, error_type) = resolve_error_status(err);
     let msg = err.to_string();
     debug!(error = %msg, "openai_mcp_tool_resolve rejected");
-    FilterAction::Reject(responses_error_rejection(status, error_type, &msg, streaming))
+    FilterAction::Reject(responses_error_rejection(status, error_type, &msg))
 }
 
 /// Map a [`ResolveError`] to the [`FilterAction`] returned from the
@@ -693,7 +694,7 @@ pub(crate) fn resolve_error_action(
         });
         return FilterAction::Continue;
     }
-    resolve_error_rejection(err, streaming)
+    resolve_error_rejection(err)
 }
 
 /// Consume a stashed streaming listing failure and emit the terminal SSE.
