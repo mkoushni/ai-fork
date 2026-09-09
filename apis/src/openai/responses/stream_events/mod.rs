@@ -449,11 +449,25 @@ fn encode_sse_event(event_type: &str, payload: &Value, output: &mut Vec<u8>) {
     output.extend_from_slice(event_type.as_bytes());
     output.extend_from_slice(b"\ndata: ");
     // Serialize into the output buffer so logical-stream emission does not
-    // allocate an intermediate `String` via `Display`.
-    if let Err(error) = serde_json::to_writer(&mut *output, payload) {
+    // allocate an intermediate `String` via `Display`. Truncate on failure so
+    // a partial JSON write cannot be followed by the SSE delimiter.
+    if let Err(error) = write_json_or_rollback(output, |out| serde_json::to_writer(out, payload)) {
         debug!(%error, "logical-stream payload serialization failed");
+        return;
     }
     output.extend_from_slice(b"\n\n");
+}
+
+/// Write into `output`, restoring the pre-write length if `write` fails.
+fn write_json_or_rollback<E>(output: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>) -> Result<(), E>) -> Result<(), E> {
+    let start = output.len();
+    match write(output) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            output.truncate(start);
+            Err(error)
+        },
+    }
 }
 
 /// Emit the held terminal event only when the current IRR step is terminal.

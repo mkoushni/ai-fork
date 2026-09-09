@@ -829,6 +829,35 @@ fn encode_sse_event_writes_compact_json_directly_into_output() {
     );
 }
 
+#[test]
+fn write_json_or_rollback_discards_partial_bytes_on_failure() {
+    let mut output = b"event: response.failed\ndata: ".to_vec();
+    let prefix = output.clone();
+    let result = super::write_json_or_rollback(&mut output, |out| {
+        out.extend_from_slice(br#"{"type":"response.failed""#);
+        Err(std::io::Error::other("injected write failure"))
+    });
+    assert!(
+        result.is_err(),
+        "injected failure must surface so encode_sse_event can skip the SSE delimiter"
+    );
+    let err = result.unwrap_err();
+
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::Other,
+        "rollback must preserve the original write error"
+    );
+    assert_eq!(
+        output, prefix,
+        "a failed payload write must not leave partial JSON in the SSE buffer"
+    );
+    assert!(
+        !output.windows(2).any(|window| window == b"\n\n"),
+        "encode_sse_event must return before appending the SSE delimiter"
+    );
+}
+
 /// Previous logical-stream encoder: compact JSON through an intermediate `String`.
 fn encode_sse_event_with_intermediate_string(event_type: &str, payload: &serde_json::Value, output: &mut Vec<u8>) {
     output.extend_from_slice(b"event: ");
