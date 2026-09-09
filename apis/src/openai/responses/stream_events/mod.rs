@@ -320,7 +320,9 @@ fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration)
 ///
 /// Those failures arrive as end-of-stream with [`StreamTerminationCause`]
 /// set, not as another SSE chunk, so [`check_timeout`] never ran while
-/// the backend was silent.
+/// the backend was silent. A backend that already sent a terminal event
+/// can still trip this timer while closing the HTTP body; that is not a
+/// stream error.
 fn record_idle_transport_timeout(ctx: &mut HttpFilterContext<'_>) {
     let Some(cause) = ctx.stream_termination().map(praxis_filter::StreamTermination::cause) else {
         return;
@@ -331,15 +333,24 @@ fn record_idle_transport_timeout(ctx: &mut HttpFilterContext<'_>) {
     ) {
         return;
     }
-    if ctx.get_metadata("responses.stream_error_code").is_none() {
-        ctx.set_metadata("responses.stream_error_code", "server_error");
-        ctx.set_metadata(
-            "responses.stream_error_message",
-            "upstream Responses stream exceeded timeout",
-        );
-        ctx.set_metadata("responses.skip_persist", "true");
-    }
+    record_idle_timeout_error_if_incomplete(ctx);
     ctx.mark_stream_termination_handled();
+}
+
+/// Set timeout error metadata only when the SSE parser never saw a terminal event.
+fn record_idle_timeout_error_if_incomplete(ctx: &mut HttpFilterContext<'_>) {
+    let parser_complete = ctx
+        .get_filter_state::<StreamEventsState>()
+        .is_some_and(|state| state.completion_state != CompletionState::Open);
+    if parser_complete || ctx.get_metadata("responses.stream_error_code").is_some() {
+        return;
+    }
+    ctx.set_metadata("responses.stream_error_code", "server_error");
+    ctx.set_metadata(
+        "responses.stream_error_message",
+        "upstream Responses stream exceeded timeout",
+    );
+    ctx.set_metadata("responses.skip_persist", "true");
 }
 
 /// Parse SSE frames, accumulating state and optionally normalizing output.
