@@ -105,15 +105,8 @@
           "body": {
             "kind": "json",
             "value": {
-              "input": [
-                {
-                  "content": "Reply with exactly `4` and nothing else.",
-                  "role": "user",
-                  "type": "message"
-                }
-              ],
+              "input": "Reply with exactly `4` and nothing else.",
               "model": "synthetic-agentic-model",
-              "parallel_tool_calls": false,
               "store": false,
               "stream": false,
               "tools": [
