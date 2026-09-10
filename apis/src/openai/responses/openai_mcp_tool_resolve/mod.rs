@@ -2037,6 +2037,9 @@ fn commit_deferred_listings(
 
     for item in prepared {
         insert_tools(item.filtered, &item.entry, &mut state.mcp_tool_map);
+        if let Some(id) = item.listing_item.get("id").and_then(serde_json::Value::as_str) {
+            state.locally_executed_output_items.insert(id.to_owned());
+        }
         state.persisted_messages.push(item.listing_item.clone());
         state.accumulated_output.push(item.listing_item);
     }

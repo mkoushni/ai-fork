@@ -3466,6 +3466,13 @@ async fn discover_deferred_connectors_loads_filtered_tools_without_leaking_endpo
         "listing id should be opaque: {}",
         listing["id"]
     );
+    assert!(
+        listing["id"]
+            .as_str()
+            .is_some_and(|id| state.locally_executed_output_items.contains(id)),
+        "successful listings must record stream-events provenance: {:?}",
+        state.locally_executed_output_items
+    );
     let listed_tools = listing["tools"].as_array().expect("mcp_list_tools should list tools");
     assert_eq!(listed_tools.len(), 1);
     assert!(

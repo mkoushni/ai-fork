@@ -1097,6 +1097,34 @@ fn hosted_container_shell_call_does_not_conflict_with_mcp_dispatch() {
 }
 
 #[test]
+fn hosted_tool_search_conflicts_with_client_function_call() {
+    let mut state = make_state_with_tool_calls(vec![json!({
+        "type":"function_call", "call_id":"c1", "name":"get_weather", "status":"completed"
+    })]);
+    state.tool_search_calls = vec![json!({
+        "type":"tool_search_call", "id":"tsc_1", "status":"completed"
+    })];
+
+    assert!(
+        super::has_mixed_function_call_ownership(&state),
+        "hosted tool_search_call mixed with a client function_call must be rejected"
+    );
+}
+
+#[test]
+fn hosted_tool_search_alone_is_not_mixed_ownership() {
+    let mut state = make_state_with_tool_calls(vec![]);
+    state.tool_search_calls = vec![json!({
+        "type":"tool_search_call", "id":"tsc_1", "status":"completed"
+    })];
+
+    assert!(
+        !super::has_mixed_function_call_ownership(&state),
+        "a hosted tool_search_call by itself must still loop for deferred discovery"
+    );
+}
+
+#[test]
 fn mixed_ownership_incomplete_response_is_preserved() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");
@@ -1713,6 +1741,43 @@ fn mixed_client_function_and_web_search_calls_fail_before_dispatch() {
     assert!(
         matches!(&action, FilterAction::Reject(rejection) if rejection.status == 502),
         "mixed client/server ownership must fail before web-search side effects"
+    );
+}
+
+#[test]
+fn mixed_client_function_and_tool_search_calls_fail_before_dispatch() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{}",
+                "status": "completed"
+            },
+            {
+                "type": "tool_search_call",
+                "id": "tsc_1",
+                "status": "completed"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(&action, FilterAction::Reject(rejection) if rejection.status == 502),
+        "mixed client function_call and hosted tool_search_call must fail before deferred discovery"
     );
 }
 

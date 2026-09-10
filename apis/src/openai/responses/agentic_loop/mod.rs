@@ -531,13 +531,17 @@ fn extract_tool_calls_from_body(body: &Bytes, state: &mut ResponsesState) {
     state.response_object = response;
 }
 
-/// Return whether one model round mixed server-owned MCP or web-search calls
-/// with calls that must be executed by the API client. The
-/// current IRR continuation cannot execute the former without sending the
-/// latter back to inference as an unresolved call, so fail before any external
-/// side effect.
+/// Return whether one model round mixed server-owned MCP, web-search, or
+/// hosted tool-search calls with calls that must be executed by the API
+/// client. The current IRR continuation cannot execute the former without
+/// sending the latter back to inference as an unresolved call, so fail
+/// before any external side effect.
 fn has_mixed_function_call_ownership(state: &ResponsesState) -> bool {
-    let mut has_server = !state.web_search_calls.is_empty();
+    let mut has_server = !state.web_search_calls.is_empty()
+        || state
+            .tool_search_calls
+            .iter()
+            .any(|item| !super::state::is_client_executed_tool_call(item));
     let mut has_client = state
         .output_items()
         .iter()
