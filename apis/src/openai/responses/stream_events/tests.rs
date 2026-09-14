@@ -3444,8 +3444,19 @@ async fn idle_timeout_does_not_fail_a_completed_sse_stream() {
     let mut body = Some(make_sse_chunk("response.completed", &completed));
     filter.on_response_body(&mut ctx, &mut body, false).unwrap();
 
-    super::record_idle_timeout_error_if_incomplete(&mut ctx);
+    // Transport-level IdleTimeout cannot be injected here (`StreamTermination`
+    // is crate-private). The completeness guard is the same function that
+    // `record_idle_transport_timeout` calls before mark_stream_termination_handled.
+    super::publish_idle_timeout_if_incomplete(&mut ctx);
+    let mut eos = None;
+    filter.on_response_body(&mut ctx, &mut eos, true).unwrap();
 
+    assert_eq!(
+        ctx.get_filter_state::<StreamEventsState>()
+            .map(|state| state.completion_state),
+        Some(CompletionState::TerminalLifecycle),
+        "response.completed must leave the parser in a terminal lifecycle"
+    );
     assert!(
         ctx.get_metadata("responses.stream_error_code").is_none(),
         "a terminal lifecycle event must not be rewritten as a transport timeout"
@@ -3464,7 +3475,7 @@ async fn idle_timeout_fails_an_open_sse_stream() {
     let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
     filter.on_response_body(&mut ctx, &mut body, false).unwrap();
 
-    super::record_idle_timeout_error_if_incomplete(&mut ctx);
+    super::publish_idle_timeout_if_incomplete(&mut ctx);
 
     assert_eq!(
         ctx.get_metadata("responses.stream_error_code"),

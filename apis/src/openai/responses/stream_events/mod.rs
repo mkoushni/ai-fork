@@ -333,24 +333,23 @@ fn record_idle_transport_timeout(ctx: &mut HttpFilterContext<'_>) {
     ) {
         return;
     }
-    record_idle_timeout_error_if_incomplete(ctx);
+    publish_idle_timeout_if_incomplete(ctx);
     ctx.mark_stream_termination_handled();
 }
 
 /// Set timeout error metadata only when the SSE parser never saw a terminal event.
-fn record_idle_timeout_error_if_incomplete(ctx: &mut HttpFilterContext<'_>) {
+fn publish_idle_timeout_if_incomplete(ctx: &mut HttpFilterContext<'_>) {
     let parser_complete = ctx
         .get_filter_state::<StreamEventsState>()
         .is_some_and(|state| state.completion_state != CompletionState::Open);
-    if parser_complete || ctx.get_metadata("responses.stream_error_code").is_some() {
-        return;
+    if !parser_complete && ctx.get_metadata("responses.stream_error_code").is_none() {
+        ctx.set_metadata("responses.stream_error_code", "server_error");
+        ctx.set_metadata(
+            "responses.stream_error_message",
+            "upstream Responses stream exceeded timeout",
+        );
+        ctx.set_metadata("responses.skip_persist", "true");
     }
-    ctx.set_metadata("responses.stream_error_code", "server_error");
-    ctx.set_metadata(
-        "responses.stream_error_message",
-        "upstream Responses stream exceeded timeout",
-    );
-    ctx.set_metadata("responses.skip_persist", "true");
 }
 
 /// Parse SSE frames, accumulating state and optionally normalizing output.
