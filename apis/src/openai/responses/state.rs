@@ -21,6 +21,18 @@ use bytes::Bytes;
 /// Maximum citation file mappings retained during one response execution.
 pub(crate) const MAX_CITATION_FILES: usize = 1_024;
 
+/// Origin of a reconciled `file_search` item queued for EOS synthesis (#313 §4).
+/// Captured at translate time (a `Private` item's opening was suppressed by
+/// `stream_events` and must be reproduced; a `Native` item's opening already
+/// streamed live, so only the tail is synthesized).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SynthesisKind {
+    /// Translated from a private `function_call` this round; opening must be synthesized.
+    Private,
+    /// Native hybrid `file_search_call`; opening already streamed.
+    Native,
+}
+
 /// Return whether an output item consumes the response-wide built-in tool-call budget.
 ///
 /// All local built-in dispatchers share this classifier so adding a provider
@@ -189,7 +201,10 @@ pub(crate) enum McpApprovalState {
 /// [`RequestExtensions`]: praxis_filter::RequestExtensions
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "request, transport, and deferred lifecycle flags are independent"
+    reason = "request-scoped state bag; the request, transport, and deferred \
+              lifecycle bool flags (history_rehydrated, parallel_tool_calls, \
+              store_persist_armed) are independent request facts, not a state \
+              machine or refactorable enum"
 )]
 pub(crate) struct ResponsesState {
     /// Maps file IDs to filenames for citation annotation extraction.
@@ -312,6 +327,30 @@ pub(crate) struct ResponsesState {
     /// inference.
     pub persisted_messages: Vec<serde_json::Value>,
 
+    /// Server-owned pending MCP approvals emitted during this request.
+    ///
+    /// Populated by `mcp_dispatch` when it pauses on an
+    /// `mcp_approval_request`, this is drained by the store filter and
+    /// persisted as the authoritative record for correlating a later
+    /// `mcp_approval_response`. Consent provenance lives here and in the
+    /// store, never in the (client-influenced) conversation history.
+    pub pending_approvals: Vec<crate::store::PendingApprovalRecord>,
+
+    /// Whether the store filter armed persistence for this exchange.
+    ///
+    /// Set by `openai_response_store` during the request phase only after it
+    /// initializes and registers a backend AND classifies this request as one
+    /// whose response will be persisted. `mcp_dispatch` reads this
+    /// exchange-scoped marker before emitting an `mcp_approval_request`: unlike
+    /// pipeline-scoped registry membership, it proves the store filter actually
+    /// ran and intends to persist THIS response, so it also catches a store
+    /// filter that is absent, request-conditioned out, or ordered after
+    /// dispatch. It cannot observe a response-phase persistence skip (a
+    /// `response_conditions`-gated store filter, a non-2xx status, etc.); that
+    /// narrower residual is unsupported for approval pipelines and still fails
+    /// closed at resume.
+    pub store_persist_armed: bool,
+
     /// ID of a previous response to continue from.
     ///
     /// When set, `rehydrate` fetches the stored conversation
@@ -423,6 +462,31 @@ pub(crate) struct ResponsesState {
     /// `mcp_dispatch` records both the approval-request and result item ids;
     /// `web_search` records the id it replaces with executed results.
     pub locally_executed_output_items: HashSet<String>,
+
+    /// Absolute `output_index` values into `accumulated_output` (+ origin) for the
+    /// items `openai_file_search_callout` reconciled this round on the streaming
+    /// path. Drained exactly once by `stream_events` at finalize (§4.2). Index + a
+    /// 1-byte tag (no owned `Value`) so it needs no separate `continuation_state_fits` charge.
+    pub pending_local_tool_synthesis: Vec<(usize, SynthesisKind)>,
+
+    /// Provider `file_search_call` item ids whose terminal lifecycle
+    /// `stream_events` already streamed live — a native hybrid whose terminal
+    /// `output_item.done` passed through, cancelling EOS suppression (§6).
+    /// The streaming reconcile reads this to skip re-queuing such a call for
+    /// synthesis; a synthesized tail would emit a DUPLICATE terminal
+    /// `output_item.done` (#313 P1). Recorded for ANY provider-terminal status
+    /// (completed/failed/incomplete): the set membership — not the status — is
+    /// authoritative. A callout-terminalized `incomplete` call is absent here
+    /// (its live done was suppressed, never passed through) and still synthesizes.
+    /// Keyed by item id (stable across the streamed done and the accumulated item).
+    ///
+    /// Lifecycle is one IRR round: `stream_events` records into it during the round's
+    /// chunks, `file_search`'s EOS reconcile reads it, then `finalize_logical_stream`
+    /// clears it (§6). The ids are stale after their round — they never re-match a later
+    /// round's items — so clearing loses nothing and bounds the set. It is also charged
+    /// against `max_state_bytes` in `continuation_state_fits` like every other
+    /// request-scoped field (#313 P1 `DoS` bound).
+    pub provider_streamed_terminal_ids: BTreeSet<String>,
 }
 
 /// Which client-visible lifecycle milestones a locally generated output item has
@@ -564,6 +628,8 @@ impl Default for ResponsesState {
             messages: Vec::new(),
             parallel_tool_calls: true,
             persisted_messages: Vec::new(),
+            pending_approvals: Vec::new(),
+            store_persist_armed: false,
             previous_response_id: None,
             previous_tools: Vec::new(),
             previous_usage: None,
@@ -583,6 +649,8 @@ impl Default for ResponsesState {
             accumulated_output: Vec::new(),
             emitted_output_items: HashMap::new(),
             locally_executed_output_items: HashSet::new(),
+            pending_local_tool_synthesis: Vec::new(),
+            provider_streamed_terminal_ids: BTreeSet::new(),
         }
     }
 }
@@ -612,6 +680,7 @@ impl ResponsesState {
             tool_choice,
             tools,
             accumulated_output: Vec::new(),
+            pending_local_tool_synthesis: Vec::new(),
             ..Default::default()
         }
     }
@@ -678,6 +747,11 @@ impl ResponsesState {
         if let Ok(serialized) = serde_json::to_vec(&response) {
             *body = Some(Bytes::from(serialized));
         }
+    }
+
+    /// Move the pending local-tool synthesis queue out, leaving it empty.
+    pub fn drain_pending_local_tool_synthesis(&mut self) -> Vec<(usize, SynthesisKind)> {
+        std::mem::take(&mut self.pending_local_tool_synthesis)
     }
 }
 
@@ -1169,6 +1243,8 @@ mod tests {
         assert_eq!(state.iteration, 0);
         assert!(state.max_tool_calls.is_none());
         assert!(state.parallel_tool_calls);
+        assert!(state.persisted_messages.is_empty());
+        assert!(!state.store_persist_armed);
         assert!(state.previous_response_id.is_none());
         assert!(state.previous_usage.is_none());
         assert!(state.request_body.is_null());
@@ -1245,6 +1321,19 @@ mod tests {
         let body = json!({"model": "gpt-4o", "input": "test"});
         let state = ResponsesState::from_request_body(body);
         assert!(state.mcp_tool_map.is_empty(), "initial mcp_tool_map should be empty");
+    }
+
+    #[test]
+    fn drain_pending_local_tool_synthesis_moves_and_empties() {
+        let mut state = ResponsesState::default();
+        state.pending_local_tool_synthesis.push((3, SynthesisKind::Native));
+        state.pending_local_tool_synthesis.push((7, SynthesisKind::Private));
+        let drained = state.drain_pending_local_tool_synthesis();
+        assert_eq!(drained, vec![(3, SynthesisKind::Native), (7, SynthesisKind::Private)]);
+        assert!(
+            state.pending_local_tool_synthesis.is_empty(),
+            "drain must leave the queue empty (drain-once)"
+        );
     }
 
     #[test]

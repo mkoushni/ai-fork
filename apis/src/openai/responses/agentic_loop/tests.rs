@@ -154,8 +154,9 @@ fn passthrough_without_state_on_response_body() {
 async fn on_request_rejects_typed_streaming_without_logical_stream() {
     // openai_responses_proxy already selected the typed streaming transport for
     // this round, but openai_stream_events published no logical-stream marker
-    // (logical_stream: false or the filter is absent). A loop-terminal error
-    // could not reach the client, so this must fail closed before dispatch.
+    // (the filter is absent from this step, so nothing armed a finalizer). A
+    // loop-terminal error could not reach the client, so this must fail closed
+    // before dispatch.
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");
     let mut ctx = make_filter_context(&req);
@@ -2101,6 +2102,130 @@ fn web_search_call_does_not_count_as_function_call_for_limit() {
     let state = ctx.extensions.get::<ResponsesState>().unwrap();
     assert_eq!(state.web_search_calls.len(), 2);
     assert!(state.tool_calls.is_empty());
+}
+
+#[test]
+fn status_less_function_call_is_collected() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_status_less",
+        "object": "response",
+        "status": "completed",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{}"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    let results = ctx.filter_results.get("openai_agentic_loop").unwrap();
+    let action = results.get("action").unwrap();
+
+    assert_eq!(
+        state.tool_calls.len(),
+        1,
+        "Status-less function call should be extracted to tool_calls"
+    );
+    assert_eq!(action, "loop", "Agentic loop action should be 'loop'");
+}
+
+#[test]
+fn status_null_function_call_is_collected() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_status_null",
+        "object": "response",
+        "status": "completed",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "get_weather",
+                "arguments": "{}",
+                "status": null
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    let results = ctx.filter_results.get("openai_agentic_loop").unwrap();
+    let action = results.get("action").unwrap();
+
+    assert_eq!(
+        state.tool_calls.len(),
+        1,
+        "Function call with null status should be extracted to tool_calls"
+    );
+    assert_eq!(action, "loop", "Agentic loop action should be 'loop'");
+}
+
+#[test]
+fn malformed_function_call_status_is_ignored() {
+    let malformed_statuses = vec![
+        json!(123),
+        json!({}),
+        json!(["completed"]),
+        json!("failed"),
+        json!("in_progress"),
+    ];
+
+    for malformed_status in malformed_statuses {
+        let filter = make_filter();
+        let req = make_request(Method::POST, "/v1/responses");
+        let mut ctx = make_filter_context(&req);
+
+        let state = make_state_with_tool_calls(vec![]);
+        ctx.extensions.insert(state);
+
+        let response_body = json!({
+            "id": "resp_malformed_status",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                    "status": malformed_status
+                }
+            ]
+        });
+        let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+        drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+
+        let state = ctx.extensions.get::<ResponsesState>().unwrap();
+        assert!(
+            state.tool_calls.is_empty(),
+            "Function call with malformed status `{malformed_status}` should be ignored"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------------

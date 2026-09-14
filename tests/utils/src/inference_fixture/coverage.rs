@@ -1300,6 +1300,7 @@ mod tests {
                 "messages/upstream-error",
                 "responses/agentic-deferred-mcp-connectors",
                 "responses/agentic-parallel-tool-calls",
+                "responses/agentic-status-less-function-call",
                 "responses/chat-basic-nonstream",
                 "responses/chat-basic-stream",
                 "responses/chat-file-search",
@@ -1431,6 +1432,10 @@ mod tests {
                 (
                     &"responses.agentic.parallel_tool_calls".to_owned(),
                     &vec!["responses/agentic-parallel-tool-calls".to_owned()]
+                ),
+                (
+                    &"responses.agentic.status_less_function_call".to_owned(),
+                    &vec!["responses/agentic-status-less-function-call".to_owned()]
                 ),
                 (
                     &"responses.agentic.irr_terminal_streaming".to_owned(),

@@ -248,18 +248,19 @@ impl HttpFilter for AgenticLoopFilter {
         // truncated success. Buffered rounds retain full error handling and are
         // unaffected.
         if ctx.subrequest_response_mode() == SubRequestResponseMode::Streaming {
-            // Consume the per-round marker so a `"true"` published by another IRR
-            // step cannot satisfy a later step's check. `openai_stream_events`
-            // re-publishes it every armed round before this filter reads it.
-            let logical_stream = ctx.get_metadata("responses.logical_stream") == Some("true");
+            // `openai_stream_events` publishes this marker on every armed round
+            // (it always composes its stream into one logical Responses
+            // lifecycle). Consume it so a `"true"` published by another IRR step
+            // cannot satisfy a later step's check; the filter re-publishes it
+            // every armed round before this filter reads it.
+            let stream_events_armed = ctx.get_metadata("responses.logical_stream") == Some("true");
             ctx.set_metadata("responses.logical_stream", "false");
-            if !logical_stream {
+            if !stream_events_armed {
                 return Ok(FilterAction::Reject(responses_error_rejection(
                     500,
                     "server_error",
                     "openai_agentic_loop with a streaming openai_responses_proxy sub-request requires \
-                     openai_stream_events with logical_stream: true so loop-terminal errors can \
-                     reach the client",
+                     openai_stream_events in the same step so loop-terminal errors can reach the client",
                 )));
             }
         }
@@ -393,17 +394,9 @@ fn reject_mixed_ownership_round(
     )))
 }
 
-/// Only a successfully terminated stream may authorize external side effects.
-fn streamed_round_is_dispatchable(ctx: &HttpFilterContext<'_>, state: &ResponsesState) -> bool {
-    state.request_body.get("stream").and_then(Value::as_bool) != Some(true)
-        || (ctx.get_metadata("responses.stream_completion") == Some("terminal")
-            && state.response_object.get("status").and_then(Value::as_str) == Some("completed")
-            && ctx.get_metadata("responses.stream_parse_error") != Some("true"))
-}
-
 /// Collect an authoritative successful stream or terminate without dispatch.
 fn prepare_streamed_round(ctx: &mut HttpFilterContext<'_>, state: &mut ResponsesState) -> Result<bool, FilterError> {
-    if !streamed_round_is_dispatchable(ctx, state) {
+    if !super::streamed_round_is_dispatchable(ctx, state) {
         collect_streaming_output_items(state);
         state.tool_calls.clear();
         state.tool_search_calls.clear();
@@ -574,7 +567,7 @@ fn collect_output_items(response: &Value, state: &mut ResponsesState) {
     for item in output {
         state.accumulated_output.push(item.clone());
         match item.get("type").and_then(Value::as_str) {
-            Some("function_call") if is_completed_output_item(item) => {
+            Some("function_call") if is_dispatchable_function_call(item) => {
                 state.tool_calls.push(item.clone());
                 state.messages.push(item.clone());
                 state.persisted_messages.push(item.clone());
@@ -643,6 +636,15 @@ fn collect_streaming_output_items(state: &mut ResponsesState) {
             },
         }
     }
+}
+
+/// Whether a function call is complete enough to dispatch.
+///
+/// OpenAI omits `status` or sends `null` on some completed calls (#955), so
+/// missing/null is treated as completed. Explicit non-completed statuses are not.
+fn is_dispatchable_function_call(item: &Value) -> bool {
+    item.get("status")
+        .is_none_or(|status| status.is_null() || status.as_str() == Some("completed"))
 }
 
 /// Whether an output item is a completed tool or search call.
