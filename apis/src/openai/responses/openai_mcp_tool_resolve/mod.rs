@@ -818,6 +818,7 @@ fn is_mcp_listing_runtime_failure(err: &ResolveError) -> bool {
             | mcp_client::McpClientError::Timeout { .. }
             | mcp_client::McpClientError::Serialization(_)
             | mcp_client::McpClientError::TooManyTools { .. }
+            | mcp_client::McpClientError::ListingTooLarge { .. }
     )
 }
 
@@ -1264,7 +1265,8 @@ fn resolvable_server_url(entry: &serde_json::Value) -> Option<&str> {
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
     {
-        debug!(label = server_label(entry), "skipping deferred MCP entry");
+        let display_url = mcp_client::parse_display_url(server_url);
+        debug!(label = server_label(entry), url = %display_url, "skipping deferred MCP entry");
         return None;
     }
     Some(server_url)
@@ -1446,7 +1448,8 @@ async fn fetch_tools(
     max_tools: usize,
     allow_loopback: bool,
 ) -> Result<Vec<serde_json::Value>, ResolveError> {
-    debug!(label = server_label(entry), "calling MCP tools/list");
+    let display_url = mcp_client::parse_display_url(server_url);
+    debug!(label = server_label(entry), url = %display_url, "calling MCP tools/list");
     let auth = entry.get("authorization").and_then(serde_json::Value::as_str);
     mcp_client::list_tools(
         server_url,
