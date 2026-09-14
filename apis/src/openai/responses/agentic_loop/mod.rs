@@ -122,7 +122,7 @@ use self::config::{AgenticLoopConfig, build_config};
 use super::{
     error::responses_error_rejection,
     openai_mcp_tool_resolve::McpToolIndex,
-    state::{McpApprovalState, ResponsesState},
+    state::{McpApprovalState, ResponsesState, tool_search_discovery_is_within_budget},
     stream_events::encode_local_completion,
     usage::merge_usage,
 };
@@ -468,7 +468,8 @@ fn evaluate_loop_decision(
     body: &mut Option<Bytes>,
     config: &AgenticLoopConfig,
 ) -> Result<FilterAction, FilterError> {
-    if state.tool_calls.is_empty() && state.web_search_calls.is_empty() && state.tool_search_calls.is_empty() {
+    let pending_tool_search = !state.tool_search_calls.is_empty() && tool_search_discovery_is_within_budget(state);
+    if state.tool_calls.is_empty() && state.web_search_calls.is_empty() && !pending_tool_search {
         trace!("no tool calls, signaling done");
         state.finalize_response_body(body);
         return set_done(ctx);
@@ -585,11 +586,14 @@ fn collect_output_items(response: &Value, state: &mut ResponsesState) {
                 state.web_search_calls.push(item.clone());
                 state.persisted_messages.push(item.clone());
             },
-            Some("tool_search_call") if is_completed_output_item(item) => {
-                // Mirror function-call handling: only a completed search may
-                // trigger deferred `tools/list`. In-progress or incomplete
-                // items stay in `accumulated_output` without network effects.
+            Some("tool_search_call") if is_hosted_completed_tool_search(item) => {
+                // Only a completed hosted search may trigger deferred
+                // `tools/list`. Client-executed searches return to the caller
+                // without listing or another inference round.
                 state.tool_search_calls.push(item.clone());
+                state.persisted_messages.push(item.clone());
+            },
+            Some("tool_search_call") if is_completed_output_item(item) => {
                 state.persisted_messages.push(item.clone());
             },
             _ => {},
@@ -622,12 +626,18 @@ fn collect_streaming_output_items(state: &mut ResponsesState) {
                 state.accumulated_output.push(item.clone());
                 state.persisted_messages.push(item);
             },
-            Some("tool_search_call") if is_completed_output_item(&item) => {
+            Some("tool_search_call") if is_hosted_completed_tool_search(&item) => {
                 // Mirror the buffered collector: a completed hosted
                 // `tool_search_call` is not a valid OpenResponses input item, so
                 // it must not enter `messages`. `openai_mcp_dispatch` consumes
                 // `tool_search_calls` to list deferred connectors.
                 state.tool_search_calls.push(item.clone());
+                state.accumulated_output.push(item.clone());
+                state.persisted_messages.push(item);
+            },
+            Some("tool_search_call") if is_completed_output_item(&item) => {
+                // Client-executed searches stay client-visible and stored, but
+                // must not queue server-side connector discovery.
                 state.accumulated_output.push(item.clone());
                 state.persisted_messages.push(item);
             },
@@ -650,6 +660,11 @@ fn is_dispatchable_function_call(item: &Value) -> bool {
 /// Whether an output item is a completed tool or search call.
 fn is_completed_output_item(item: &Value) -> bool {
     item.get("status").and_then(Value::as_str) == Some("completed")
+}
+
+/// Whether a completed `tool_search_call` is owned by the proxy, not the client.
+fn is_hosted_completed_tool_search(item: &Value) -> bool {
+    is_completed_output_item(item) && !super::state::is_client_executed_tool_call(item)
 }
 
 /// Check whether a parsed response is a valid Responses API output.

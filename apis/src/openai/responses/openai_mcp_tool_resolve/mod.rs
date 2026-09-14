@@ -2021,7 +2021,9 @@ fn write_state(
 
 /// Whether deferred connector discovery should run on this IRR iteration.
 pub(crate) fn has_pending_deferred_discovery(state: &ResponsesState) -> bool {
-    !state.tool_search_calls.is_empty() && !state.deferred_mcp.is_empty()
+    !state.tool_search_calls.is_empty()
+        && !state.deferred_mcp.is_empty()
+        && super::state::tool_search_discovery_is_within_budget(state)
 }
 
 /// Load tools for deferred connectors after a `tool_search_call`.
@@ -2029,9 +2031,11 @@ pub(crate) fn has_pending_deferred_discovery(state: &ResponsesState) -> bool {
 /// Lists every pending connector before mutating state. Applies
 /// `allowed_tools`, collision detection, and `max_rewritten_body_bytes`
 /// to the expanded tools, then writes `mcp_tool_map` and replaces
-/// sanitized deferred MCP entries with function tools.
+/// sanitized deferred MCP entries with function tools. An exhausted
+/// `max_tool_calls` budget skips `tools/list` and leaves connectors
+/// pending so the round can return to the caller.
 pub(crate) async fn discover_deferred_connectors(state: &mut ResponsesState) -> Result<(), ResolveError> {
-    if state.deferred_mcp.is_empty() {
+    if state.deferred_mcp.is_empty() || !super::state::tool_search_discovery_is_within_budget(state) {
         return Ok(());
     }
 

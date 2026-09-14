@@ -3691,6 +3691,61 @@ fn has_pending_deferred_discovery_requires_tool_search_and_connectors() {
     assert!(has_pending_deferred_discovery(&state));
 }
 
+#[test]
+fn has_pending_deferred_discovery_respects_exhausted_max_tool_calls() {
+    let search = serde_json::json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"});
+    let mut state = ResponsesState {
+        deferred_mcp: vec![deferred_connector("https://a.example.com/mcp", None, None)],
+        tool_search_calls: vec![search.clone()],
+        max_tool_calls: Some(0),
+        ..ResponsesState::default()
+    };
+    assert!(
+        !has_pending_deferred_discovery(&state),
+        "an exhausted built-in budget must not queue deferred tools/list"
+    );
+
+    state.max_tool_calls = Some(1);
+    assert!(
+        has_pending_deferred_discovery(&state),
+        "an admitted hosted search may still discover deferred connectors"
+    );
+
+    let web = serde_json::json!({"type": "web_search_call", "id": "ws_1", "status": "completed"});
+    state.accumulated_output = vec![web.clone(), search.clone()];
+    state.response_object = serde_json::json!({"output": [web, search]});
+    assert!(
+        !has_pending_deferred_discovery(&state),
+        "an earlier current-round built-in call consumes the shared cap first"
+    );
+}
+
+#[tokio::test]
+async fn discover_deferred_connectors_skips_tools_list_when_budget_exhausted() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    drop(listener);
+
+    let mut state = ResponsesState {
+        deferred_mcp: vec![deferred_connector(&server_url, None, None)],
+        tool_search_calls: vec![serde_json::json!({"type": "tool_search_call", "id": "tsc_1"})],
+        max_tool_calls: Some(0),
+        ..ResponsesState::default()
+    };
+
+    discover_deferred_connectors(&mut state).await.unwrap();
+
+    assert_eq!(
+        state.deferred_mcp.len(),
+        1,
+        "exhausted budget must leave connectors pending without tools/list"
+    );
+    assert!(
+        state.mcp_tool_map.is_empty(),
+        "exhausted budget must not rewrite deferred MCP tools"
+    );
+}
+
 #[tokio::test]
 async fn connector_missing_label_rejected_at_filter_level() {
     let yaml: serde_yaml::Value = serde_yaml::from_str(

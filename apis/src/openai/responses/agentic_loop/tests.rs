@@ -1939,6 +1939,106 @@ fn tool_search_call_queued_for_deferred_discovery() {
 }
 
 #[test]
+fn client_executed_tool_search_call_is_returned_without_deferred_discovery() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let state = make_state_with_tool_calls(vec![]);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "output": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_client",
+                "status": "completed",
+                "execution": "client"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "a client-owned search must not reject the round"
+    );
+    assert_action(&ctx, "done");
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert!(
+        state.tool_search_calls.is_empty(),
+        "client-executed tool_search_call must not queue server-side tools/list"
+    );
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|item| item.get("type").and_then(Value::as_str) != Some("tool_search_call")),
+        "tool_search_call should not enter backend messages"
+    );
+    assert!(
+        state
+            .persisted_messages
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_client")),
+        "client-executed tool_search_call should still be persisted"
+    );
+    assert!(
+        state
+            .accumulated_output
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_client")),
+        "client-executed tool_search_call remains caller-visible"
+    );
+}
+
+#[test]
+fn hosted_tool_search_does_not_loop_when_max_tool_calls_is_exhausted() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let mut state = make_state_with_tool_calls(vec![]);
+    state.max_tool_calls = Some(0);
+    ctx.extensions.insert(state);
+
+    let response_body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "output": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_over_budget",
+                "status": "completed"
+            }
+        ]
+    });
+    let mut body = Some(Bytes::from(serde_json::to_vec(&response_body).unwrap()));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert_action(&ctx, "done");
+
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert_eq!(
+        state.tool_search_calls.len(),
+        1,
+        "the hosted search remains queued so ownership checks still see it"
+    );
+    assert!(
+        state
+            .accumulated_output
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_over_budget")),
+        "an over-budget hosted search is still returned to the caller"
+    );
+}
+
+#[test]
 fn incomplete_tool_search_call_is_not_queued_for_deferred_discovery() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");
@@ -2023,6 +2123,62 @@ fn streamed_tool_search_call_is_queued_for_deferred_discovery() {
             .any(|m| m.get("type").and_then(Value::as_str) == Some("tool_search_call")),
         "a hosted tool_search_call is not a valid OpenResponses input item and must not \
          enter model-facing messages"
+    );
+}
+
+#[test]
+fn streamed_client_executed_tool_search_call_is_returned_without_deferred_discovery() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": "test",
+        "stream": true
+    }));
+    state.response_object = json!({
+        "id": "resp_search",
+        "object": "response",
+        "status": "completed",
+        "output": [{
+            "type": "tool_search_call",
+            "id": "tsc_client",
+            "status": "completed",
+            "execution": "client"
+        }]
+    });
+    ctx.set_metadata("responses.stream_completion", "terminal");
+    ctx.extensions.insert(state);
+
+    let action = filter.on_response_body(&mut ctx, &mut None, true).unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert_action(&ctx, "done");
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert!(
+        state.tool_search_calls.is_empty(),
+        "a streamed client-executed search must not queue tools/list"
+    );
+    assert!(
+        state
+            .persisted_messages
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_client")),
+        "the client-executed search must still be stored"
+    );
+    assert!(
+        state
+            .accumulated_output
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_client")),
+        "the client-executed search remains caller-visible"
+    );
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("tool_search_call")),
+        "tool_search_call should not enter backend messages"
     );
 }
 

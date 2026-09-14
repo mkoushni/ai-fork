@@ -819,6 +819,27 @@ fn current_round_tool_call_admissions_by<'a>(
     admissions
 }
 
+/// Whether a queued hosted `tool_search_call` may still consume built-in budget.
+///
+/// Deferred connector discovery is the server-side execution of that search, so
+/// it must not run `tools/list` or start another inference round after
+/// `max_tool_calls` is exhausted. An omitted limit leaves discovery allowed.
+/// When the current round's output is not yet replayable, remaining prior-round
+/// budget is the admission signal.
+pub(crate) fn tool_search_discovery_is_within_budget(state: &ResponsesState) -> bool {
+    let Some(max) = state.max_tool_calls else {
+        return true;
+    };
+    let remaining = usize::try_from(max)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(consumed_builtin_tool_calls_before_current_round(state));
+    if remaining == 0 {
+        return false;
+    }
+    let admissions = current_round_tool_call_admissions(state, &state.tool_search_calls, |_| false);
+    admissions.is_empty() || admissions.into_iter().any(|admitted| admitted)
+}
+
 /// Normalize the `input` field into a message array.
 ///
 /// The Responses API `input` can be a string (single user message),
@@ -1149,6 +1170,47 @@ mod tests {
             current_round_tool_call_admissions(&state, &[next], |_| false),
             vec![false],
             "an admitted call stays charged even when local execution was incomplete"
+        );
+    }
+
+    #[test]
+    fn tool_search_discovery_rejects_exhausted_budget() {
+        let search = json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"});
+        let exhausted = ResponsesState {
+            max_tool_calls: Some(0),
+            tool_search_calls: vec![search.clone()],
+            ..ResponsesState::default()
+        };
+        assert!(
+            !tool_search_discovery_is_within_budget(&exhausted),
+            "a zero remaining budget must not admit deferred tools/list"
+        );
+
+        let admitted = ResponsesState {
+            max_tool_calls: Some(1),
+            tool_search_calls: vec![search],
+            ..ResponsesState::default()
+        };
+        assert!(
+            tool_search_discovery_is_within_budget(&admitted),
+            "the first admitted hosted search may still list deferred connectors"
+        );
+    }
+
+    #[test]
+    fn tool_search_discovery_follows_current_round_admission_order() {
+        let search = json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"});
+        let web = json!({"type": "web_search_call", "id": "ws_1", "status": "completed"});
+        let displaced = ResponsesState {
+            max_tool_calls: Some(1),
+            accumulated_output: vec![web.clone(), search.clone()],
+            response_object: json!({"output": [web, search.clone()]}),
+            tool_search_calls: vec![search],
+            ..ResponsesState::default()
+        };
+        assert!(
+            !tool_search_discovery_is_within_budget(&displaced),
+            "an earlier current-round built-in call consumes the shared cap first"
         );
     }
 

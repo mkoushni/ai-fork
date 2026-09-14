@@ -1441,6 +1441,91 @@ fn on_response_body_deferred_tool_search_sets_loop() {
 }
 
 #[test]
+fn on_response_body_exhausted_max_tool_calls_does_not_loop_for_deferred_discovery() {
+    let filter = make_dispatch_filter();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let search = json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"});
+    ctx.extensions.insert(ResponsesState {
+        deferred_mcp: vec![DeferredMcpConnector {
+            allow_loopback: true,
+            authorization: None,
+            allowed_tools: None,
+            connector_id: "corp_drive".to_owned(),
+            headers: None,
+            max_rewritten_body_bytes: 67_108_864,
+            max_tools: 128,
+            require_approval: None,
+            server_label: "drive".to_owned(),
+            server_url: "https://drive.example.com/mcp".to_owned(),
+            timeout: std::time::Duration::from_secs(5),
+        }],
+        max_tool_calls: Some(0),
+        tool_search_calls: vec![search.clone()],
+        accumulated_output: vec![search.clone()],
+        response_object: json!({"output": [search]}),
+        ..ResponsesState::default()
+    });
+    let mut body = None;
+    let result = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(matches!(result, FilterAction::Continue));
+    assert!(
+        !ctx.filter_metadata.contains_key("openai_mcp_dispatch.action"),
+        "exhausted budget must not mark deferred discovery"
+    );
+    assert_dispatch_action(&ctx, "done");
+}
+
+#[tokio::test]
+async fn on_request_body_skips_deferred_discovery_when_max_tool_calls_exhausted() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    drop(listener);
+
+    let filter = make_dispatch_filter();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let search = json!({"type": "tool_search_call", "id": "tsc_1", "status": "completed"});
+    ctx.extensions.insert(ResponsesState {
+        deferred_mcp: vec![DeferredMcpConnector {
+            allow_loopback: true,
+            authorization: None,
+            allowed_tools: None,
+            connector_id: "corp_drive".to_owned(),
+            headers: None,
+            max_rewritten_body_bytes: 67_108_864,
+            max_tools: 128,
+            require_approval: None,
+            server_label: "drive".to_owned(),
+            server_url,
+            timeout: std::time::Duration::from_secs(1),
+        }],
+        max_tool_calls: Some(0),
+        tool_search_calls: vec![search.clone()],
+        accumulated_output: vec![search.clone()],
+        response_object: json!({"output": [search]}),
+        ..ResponsesState::default()
+    });
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4.1"}"#));
+
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "exhausted budget must skip tools/list instead of failing closed on a listing error"
+    );
+    let state = ctx.extensions.get::<ResponsesState>().unwrap();
+    assert_eq!(
+        state.deferred_mcp.len(),
+        1,
+        "connectors must remain pending when discovery is over budget"
+    );
+    assert!(
+        state.mcp_tool_map.is_empty(),
+        "exhausted budget must not rewrite deferred MCP tools"
+    );
+}
+
+#[test]
 fn on_response_body_rejects_duplicate_mcp_call_ids_before_dispatch() {
     let filter = make_dispatch_filter();
     let req = make_request(http::Method::POST, "/v1/responses");
