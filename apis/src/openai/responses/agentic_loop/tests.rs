@@ -2024,17 +2024,23 @@ fn hosted_tool_search_does_not_loop_when_max_tool_calls_is_exhausted() {
     assert_action(&ctx, "done");
 
     let state = ctx.extensions.get::<ResponsesState>().unwrap();
-    assert_eq!(
-        state.tool_search_calls.len(),
-        1,
-        "the hosted search remains queued so ownership checks still see it"
-    );
     assert!(
-        state
-            .accumulated_output
-            .iter()
-            .any(|item| item.get("id").and_then(Value::as_str) == Some("tsc_over_budget")),
-        "an over-budget hosted search is still returned to the caller"
+        state.tool_search_calls.is_empty(),
+        "an over-budget hosted search must not remain dispatchable"
+    );
+    let search = state
+        .accumulated_output
+        .iter()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some("tsc_over_budget"))
+        .expect("an over-budget hosted search is still returned to the caller");
+    assert_eq!(
+        search["status"], "incomplete",
+        "over-budget hosted searches must not remain completed"
+    );
+    let returned: Value = serde_json::from_slice(body.as_ref().expect("finalized body")).unwrap();
+    assert_eq!(
+        returned["output"][0]["status"], "incomplete",
+        "the caller-visible body must surface the incomplete search"
     );
 }
 

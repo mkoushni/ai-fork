@@ -484,10 +484,9 @@ fn buffered_discovery_emits_mcp_list_tools_output_item() {
 
     let listing = &output[list_idx];
     assert_eq!(listing["server_label"], "weather", "server_label surfaced");
-    assert_eq!(
-        listing["error"],
-        serde_json::Value::Null,
-        "successful listing has null error"
+    assert!(
+        listing.get("error").is_none(),
+        "successful listing omits error rather than sending null: {listing}"
     );
     assert!(
         listing["id"].as_str().is_some_and(|id| id.starts_with("mcpl_")),
@@ -1117,10 +1116,9 @@ fn streaming_mcp_round_trip_uses_one_logical_sse_response() {
         list_added.data["item"]["server_label"], "weather",
         "mcp_list_tools server_label: {body}"
     );
-    assert_eq!(
-        list_added.data["item"]["error"],
-        serde_json::Value::Null,
-        "successful mcp_list_tools error is null: {body}"
+    assert!(
+        list_added.data["item"].get("error").is_none(),
+        "successful mcp_list_tools omits error rather than sending null: {body}"
     );
     assert!(
         list_added.data["item"]["tools"].as_array().is_some_and(|tools| tools
@@ -1866,10 +1864,9 @@ fn streaming_mcp_failure_synthesizes_failed_progress_in_one_logical_response() {
         list_added.data["item"]["server_label"], "weather",
         "mcp_list_tools server_label: {body}"
     );
-    assert_eq!(
-        list_added.data["item"]["error"],
-        serde_json::Value::Null,
-        "successful mcp_list_tools error is null: {body}"
+    assert!(
+        list_added.data["item"].get("error").is_none(),
+        "successful mcp_list_tools omits error rather than sending null: {body}"
     );
     assert!(
         list_added.data["item"]["tools"].as_array().is_some_and(|tools| tools

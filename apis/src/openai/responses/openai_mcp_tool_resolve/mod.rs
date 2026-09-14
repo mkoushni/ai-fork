@@ -2340,7 +2340,6 @@ fn build_discovery_item(ctx: &HttpFilterContext<'_>, listing: McpListing) -> ser
         "type": "mcp_list_tools",
         "server_label": server_label,
         "tools": tools,
-        "error": null,
     })
 }
 

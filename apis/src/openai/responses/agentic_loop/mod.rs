@@ -469,6 +469,12 @@ fn evaluate_loop_decision(
     config: &AgenticLoopConfig,
 ) -> Result<FilterAction, FilterError> {
     let pending_tool_search = !state.tool_search_calls.is_empty() && tool_search_discovery_is_within_budget(state);
+    if !pending_tool_search && !state.tool_search_calls.is_empty() {
+        // Hosted search that cannot consume remaining `max_tool_calls` budget
+        // must not stay `completed`: discovery is the server-side execution of
+        // that call, matching over-budget web-search and file-search items.
+        mark_over_budget_tool_searches_incomplete(state);
+    }
     if state.tool_calls.is_empty() && state.web_search_calls.is_empty() && !pending_tool_search {
         trace!("no tool calls, signaling done");
         state.finalize_response_body(body);
@@ -485,6 +491,35 @@ fn evaluate_loop_decision(
             Ok(FilterAction::Continue)
         },
     }
+}
+
+/// Rewrite queued hosted searches to `incomplete` and drop them from dispatch.
+fn mark_over_budget_tool_searches_incomplete(state: &mut ResponsesState) {
+    let queued_ids: Vec<String> = state
+        .tool_search_calls
+        .iter()
+        .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let mark_unidentified = queued_ids.is_empty();
+    let mark = |item: &mut Value| {
+        if item.get("type").and_then(Value::as_str) != Some("tool_search_call") {
+            return;
+        }
+        let matches = match item.get("id").and_then(Value::as_str) {
+            Some(id) => queued_ids.iter().any(|queued| queued == id),
+            None => mark_unidentified,
+        };
+        if matches && let Some(obj) = item.as_object_mut() {
+            obj.insert("status".to_owned(), json!("incomplete"));
+        }
+    };
+    for item in &mut state.accumulated_output {
+        mark(item);
+    }
+    for item in &mut state.persisted_messages {
+        mark(item);
+    }
+    state.tool_search_calls.clear();
 }
 
 /// Terminate at the iteration cap using the transport that is still writable.

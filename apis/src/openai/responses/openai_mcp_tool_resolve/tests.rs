@@ -1816,6 +1816,10 @@ fn mcp_list_tools_item_emits_responses_input_schema() {
 
     assert_eq!(listing["type"], "mcp_list_tools");
     assert_eq!(listing["server_label"], "weather");
+    assert!(
+        listing.get("error").is_none(),
+        "successful deferred listings omit error rather than sending null: {listing}"
+    );
     let tool = &listing["tools"][0];
     assert_eq!(tool["name"], "get_weather");
     assert_eq!(tool["description"], "Get weather");
@@ -4852,7 +4856,10 @@ fn assert_valid_list_tools_item(item: &serde_json::Value, server_label: &str) {
     assert_eq!(item["type"], "mcp_list_tools", "item type");
     assert_eq!(item["server_label"], server_label, "server_label");
     assert!(item["tools"].is_array(), "tools is an array");
-    assert_eq!(item["error"], serde_json::Value::Null, "error is null on success");
+    assert!(
+        item.get("error").is_none(),
+        "successful listings omit error rather than sending null: {item}"
+    );
     let id = item["id"].as_str().expect("id present");
     assert!(id.starts_with("mcpl_"), "id uses mcpl_ prefix, got {id}");
 }
