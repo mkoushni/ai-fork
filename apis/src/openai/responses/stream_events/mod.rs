@@ -115,6 +115,9 @@ pub(super) struct StreamEventsState {
 ///
 /// Must run inside an `iterative_request_router` step. Running it
 /// elsewhere is a misconfiguration and fails closed at request time.
+/// Place it after `load_balancer` so `timeout_secs` can cap the selected
+/// peer; `openai_responses_proxy` buffers the request body, so IRR runs
+/// that phase before load balancing.
 ///
 /// # YAML
 ///
@@ -126,10 +129,6 @@ pub(super) struct StreamEventsState {
 /// # timeout_secs: 300
 /// # max_tool_call_argument_bytes: 1048576
 /// ```
-///
-/// `timeout_secs` bounds elapsed time across chunks. Pair it with the
-/// cluster's `read_timeout_ms` so a backend that goes silent after the
-/// first event is still terminated.
 pub struct OpenaiStreamEventsFilter {
     /// Configuration for the SSE frame parser.
     parser_config: SseParserConfig,
@@ -244,7 +243,10 @@ impl OpenaiStreamEventsFilter {
                 // `Accept-Encoding` whenever logical parsing is armed so a
                 // compliant backend returns plaintext SSE.
                 ctx.request_headers_to_remove.push(http::header::ACCEPT_ENCODING);
-                cap_upstream_read_timeout(ctx, self.parser_config.timeout);
+                if ctx.upstream.is_none() {
+                    debug!("stream_events timeout_secs not applied: load balancer has not selected ctx.upstream");
+                }
+                apply_remaining_peer_read_timeout(ctx);
                 None
             },
         }
@@ -289,17 +291,6 @@ impl HttpFilter for OpenaiStreamEventsFilter {
         "openai_stream_events"
     }
 
-    fn request_body_access(&self) -> BodyAccess {
-        // Observe the request-body phase so the timeout can be applied
-        // after load balancing has selected an upstream (when that phase
-        // still runs after `on_request`).
-        BodyAccess::ReadOnly
-    }
-
-    fn request_body_mode(&self) -> BodyMode {
-        BodyMode::Stream
-    }
-
     fn response_body_access(&self) -> BodyAccess {
         // Always ReadWrite: the filter normalizes every armed stream into one
         // logical Responses lifecycle, rewriting per-round SSE bytes.
@@ -339,18 +330,6 @@ impl HttpFilter for OpenaiStreamEventsFilter {
             return Ok(action);
         }
 
-        Ok(FilterAction::Continue)
-    }
-
-    async fn on_request_body(
-        &self,
-        ctx: &mut HttpFilterContext<'_>,
-        _body: &mut Option<Bytes>,
-        end_of_stream: bool,
-    ) -> Result<FilterAction, FilterError> {
-        if end_of_stream && Self::is_armed(ctx) {
-            cap_upstream_read_timeout(ctx, self.parser_config.timeout);
-        }
         Ok(FilterAction::Continue)
     }
 
@@ -409,11 +388,39 @@ impl HttpFilter for OpenaiStreamEventsFilter {
     }
 }
 
-/// Cap the selected peer's per-read timeout at the stream budget.
+/// Remaining time in the absolute deadline from the first SSE chunk.
+///
+/// Before that chunk the full `timeout_secs` budget is still available
+/// for the first upstream read. After it, each cap uses only what is
+/// left so a stall near the deadline cannot run for another full period.
+fn remaining_timeout(state: &StreamEventsState, now: Instant) -> Duration {
+    match state.started_at {
+        None => state.timeout,
+        Some(started) => state.timeout.saturating_sub(now.duration_since(started)),
+    }
+}
+
+/// Cap the selected peer's next read at the remaining stream budget.
+///
+/// No-op until load balancing has set `ctx.upstream`. A tighter cluster
+/// `read_timeout` is left in place. Praxis snapshots the peer timeout at
+/// dispatch, so later remaining-budget caps only take effect when the
+/// live context still holds that peer.
+fn apply_remaining_peer_read_timeout(ctx: &mut HttpFilterContext<'_>) {
+    let timeout = ctx
+        .get_filter_state::<StreamEventsState>()
+        .map_or(Duration::ZERO, |state| remaining_timeout(state, Instant::now()));
+    if timeout.is_zero() {
+        return;
+    }
+    cap_upstream_read_timeout(ctx, timeout);
+}
+
+/// Cap the selected peer's per-read timeout at `timeout`.
 ///
 /// Pingora and IRR streaming reads wake on this timer even when the
-/// backend sends no further SSE bytes. A tighter cluster `read_timeout`
-/// is left in place. No-op until load balancing has set `ctx.upstream`.
+/// backend sends no further SSE bytes. No-op until load balancing has
+/// set `ctx.upstream`.
 fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration) {
     let Some(upstream) = ctx.upstream.as_mut() else {
         return;
@@ -422,23 +429,40 @@ fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration)
     opts.read_timeout = Some(opts.read_timeout.map_or(timeout, |existing| existing.min(timeout)));
 }
 
-/// Treat an IRR idle, deadline, or peer-read abort as a stream timeout.
+/// Whether an `Io` termination is the stream deadline, not a reset.
+///
+/// Praxis 0.5.4 reports a winning peer `read_timeout` as
+/// [`StreamTerminationCause::Io`]. Matching every `Io` would also
+/// label truncated chunks and ordinary resets as timeouts. Only an
+/// open parser that has already seen a chunk and exhausted
+/// `timeout_secs` is a stream timeout.
+fn io_exceeded_stream_deadline(state: &StreamEventsState, now: Instant) -> bool {
+    state
+        .started_at
+        .is_some_and(|started| now.duration_since(started) >= state.timeout)
+}
+
+/// Treat an IRR idle, deadline, or exhausted stream-budget abort as a timeout.
 ///
 /// Those failures arrive as end-of-stream with [`StreamTerminationCause`]
 /// set, not as another SSE chunk, so [`check_timeout`] never ran while
-/// the backend was silent. Praxis 0.5.4 reports a winning peer
-/// `read_timeout` as [`StreamTerminationCause::Io`], not `IdleTimeout`;
-/// leaving that unhandled makes IRR discard the logical error bytes.
-/// A backend that already sent a terminal event can still trip this
-/// timer while closing the HTTP body; that is not a stream error.
+/// the backend was silent. Ordinary `Io` (truncated chunks, resets)
+/// is left unhandled so IRR does not replace committed SSE with a
+/// timeout error. A backend that already sent a terminal event can
+/// still trip a timer while closing the HTTP body; that is not a
+/// stream error.
 fn record_idle_transport_timeout(ctx: &mut HttpFilterContext<'_>) {
     let Some(cause) = ctx.stream_termination().map(praxis_filter::StreamTermination::cause) else {
         return;
     };
-    if !matches!(
-        cause,
-        StreamTerminationCause::IdleTimeout | StreamTerminationCause::DeadlineExceeded | StreamTerminationCause::Io
-    ) {
+    let timed_out = match cause {
+        StreamTerminationCause::IdleTimeout | StreamTerminationCause::DeadlineExceeded => true,
+        StreamTerminationCause::Io => ctx
+            .get_filter_state::<StreamEventsState>()
+            .is_some_and(|state| io_exceeded_stream_deadline(state, Instant::now())),
+        _ => false,
+    };
+    if !timed_out {
         return;
     }
     publish_idle_timeout_if_incomplete(ctx);
@@ -472,11 +496,15 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>) {
 
     let now = Instant::now();
     state.started_at.get_or_insert(now);
+    let remaining = remaining_timeout(&state, now);
 
     let parsed = parse_and_accumulate(&mut state, ctx, bytes, now);
     handle_parse_result(ctx, body, &state, parsed);
 
     ctx.insert_filter_state(state);
+    if remaining > Duration::ZERO {
+        cap_upstream_read_timeout(ctx, remaining);
+    }
 }
 
 /// Publish parser state and rewrite logical-stream output when needed.

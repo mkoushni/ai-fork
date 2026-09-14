@@ -294,15 +294,13 @@ async fn stream_events_idle_backend_is_cut_off_by_read_timeout() {
     let (db_url, db_path) = temp_sqlite_url("stream_events_idle");
     let yaml = std::fs::read_to_string(example_config_path("openai/responses/stream-events.yaml"))
         .expect("example config should exist");
-    // `openai_stream_events` sits inside the IRR inference step; keep the
-    // injected `timeout_secs` at the same indent as the filter's other fields.
-    let yaml = yaml
-        .replace("sqlite://responses.db?mode=rwc", &db_url)
-        .replace("read_timeout_ms: 300000", "read_timeout_ms: 1000")
-        .replace(
-            "              - filter: openai_stream_events\n",
-            "              - filter: openai_stream_events\n                timeout_secs: 1\n",
-        );
+    // `openai_stream_events` sits after load_balancer in the example so
+    // `timeout_secs` can cap the selected peer. Do not also shrink
+    // `read_timeout_ms`; that would hide a missing cap.
+    let yaml = yaml.replace("sqlite://responses.db?mode=rwc", &db_url).replace(
+        "              - filter: openai_stream_events\n",
+        "              - filter: openai_stream_events\n                timeout_secs: 1\n",
+    );
     let patched = patch_yaml(
         &yaml,
         proxy_port,
@@ -323,7 +321,7 @@ async fn stream_events_idle_backend_is_cut_off_by_read_timeout() {
 
     assert!(
         elapsed < Duration::from_secs(4),
-        "an idle backend after the first SSE event must be cut off by read_timeout_ms, not held until the 10s stall; elapsed={elapsed:?}"
+        "an idle backend after the first SSE event must be cut off by timeout_secs, not held until the 10s stall; elapsed={elapsed:?}"
     );
     assert_eq!(
         parse_status(&raw),

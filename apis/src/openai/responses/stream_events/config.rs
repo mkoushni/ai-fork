@@ -27,14 +27,13 @@ pub(crate) struct StreamEventsConfig {
     #[serde(default)]
     pub max_events: Option<usize>,
 
-    /// Maximum seconds from first chunk to stream completion.
+    /// Maximum seconds from the first SSE chunk to stream completion.
     ///
-    /// Checked when SSE chunks or end-of-stream arrive. An idle backend
-    /// that sends nothing further does not invoke those callbacks, so this
-    /// budget is also applied as an upstream `read_timeout` when the filter
-    /// can see the selected peer, and must be paired with cluster
-    /// `read_timeout_ms` no larger than this value so a silent connection
-    /// is torn down without waiting for another chunk.
+    /// The parser enforces this absolute deadline when chunks or
+    /// end-of-stream arrive. Place the filter after `load_balancer` so
+    /// `on_request` can cap the selected peer's `read_timeout` at the
+    /// remaining budget (the full timeout before the first chunk). A
+    /// tighter cluster `read_timeout_ms` is left in place.
     /// Default: 300 (5 minutes).
     #[serde(default)]
     pub timeout_secs: Option<u64>,

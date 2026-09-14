@@ -245,24 +245,14 @@ fn late_upstream_failure_does_not_replace_committed_sse() {
         !raw.to_ascii_lowercase().contains("bad gateway"),
         "a late failure must not replace the committed SSE response with an HTTP error: {raw}"
     );
-    // `openai_stream_events` always composes a logical stream. After a truncated
-    // chunk the parser is still Open, so finalize may append an SSE `error`
-    // event. That is a terminator on the already-committed stream, not an HTTP
-    // replacement of the 200 `text/event-stream` response.
     assert!(
         raw.to_ascii_lowercase().contains("text/event-stream"),
         "the committed SSE content type must stay: {raw}"
     );
-    if raw.contains("event: error") {
-        let delta_at = raw
-            .find("response.output_text.delta")
-            .expect("delta event was already asserted present");
-        let error_at = raw.find("event: error").expect("error event marker");
-        assert!(
-            error_at > delta_at,
-            "a logical error terminator must follow the committed delta, not replace it: {raw}"
-        );
-    }
+    assert!(
+        !raw.contains("exceeded timeout"),
+        "a truncated chunk is ordinary transport Io, not a stream timeout: {raw}"
+    );
     backend_thread.join().expect("backend thread should not panic");
 }
 

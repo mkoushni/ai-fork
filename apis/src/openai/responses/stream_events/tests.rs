@@ -4111,7 +4111,7 @@ async fn on_response_preserves_content_length_when_not_armed() {
 }
 
 #[tokio::test]
-async fn on_request_body_caps_upstream_read_timeout_at_stream_budget() {
+async fn apply_arm_caps_selected_peer_read_timeout_at_stream_budget() {
     use std::{sync::Arc, time::Duration};
 
     use praxis_core::connectivity::{ConnectionOptions, Upstream};
@@ -4130,19 +4130,38 @@ async fn on_request_body_caps_upstream_read_timeout_at_stream_budget() {
         connection: Arc::new(ConnectionOptions::default()),
     });
 
-    // Unit tests cannot construct IRR-owned `IterationState`; arm directly.
-    filter.arm(&mut ctx);
-    filter.on_request_body(&mut ctx, &mut None, true).await.unwrap();
+    filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
 
     assert_eq!(
         ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
         Some(Duration::from_secs(1)),
-        "armed stream_events must cap the selected peer read timeout so idle backends wake"
+        "after load balancing, armed stream_events must cap the selected peer so idle backends wake"
     );
 }
 
 #[tokio::test]
-async fn on_request_body_keeps_a_tighter_cluster_read_timeout() {
+async fn apply_arm_does_not_cap_before_load_balancing() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str("timeout_secs: 1").unwrap();
+    let filter = OpenaiStreamEventsFilter::build(&yaml).unwrap();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(Box::leak(Box::new(req)));
+    ctx.current_filter_id = Some(0);
+    ctx.upstream = None;
+
+    filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
+
+    assert!(
+        OpenaiStreamEventsFilter::is_armed(&ctx),
+        "arming must still install parser state when ctx.upstream is unset"
+    );
+    assert!(
+        ctx.upstream.is_none(),
+        "timeout_secs cannot invent a peer before load balancing"
+    );
+}
+
+#[tokio::test]
+async fn apply_arm_keeps_a_tighter_cluster_read_timeout() {
     use std::{sync::Arc, time::Duration};
 
     use praxis_core::connectivity::{ConnectionOptions, Upstream};
@@ -4151,8 +4170,6 @@ async fn on_request_body_keeps_a_tighter_cluster_read_timeout() {
     let filter = OpenaiStreamEventsFilter::build(&yaml).unwrap();
     let req = make_request(http::Method::POST, "/v1/responses");
     let mut ctx = make_filter_context(Box::leak(Box::new(req)));
-    ctx.set_metadata("openai_responses_format.format", "openai_responses".to_owned());
-    ctx.set_metadata("openai_responses_format.stream", "true".to_owned());
     ctx.current_filter_id = Some(0);
     ctx.upstream = Some(Upstream {
         address: Arc::from("127.0.0.1:9"),
@@ -4164,13 +4181,125 @@ async fn on_request_body_keeps_a_tighter_cluster_read_timeout() {
         }),
     });
 
-    filter.arm(&mut ctx);
-    filter.on_request_body(&mut ctx, &mut None, true).await.unwrap();
+    filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
 
     assert_eq!(
         ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
         Some(Duration::from_millis(250)),
         "a tighter cluster read timeout must not be relaxed to timeout_secs"
+    );
+}
+
+#[test]
+fn remaining_timeout_is_full_budget_before_first_chunk() {
+    use std::time::Instant;
+
+    let (_filter, ctx) = make_armed_context();
+    let state = ctx.get_filter_state::<StreamEventsState>().unwrap();
+    assert_eq!(
+        super::remaining_timeout(state, Instant::now()),
+        state.timeout,
+        "before the first SSE chunk the remaining budget is timeout_secs"
+    );
+}
+
+#[test]
+fn remaining_timeout_shrinks_after_first_chunk() {
+    use std::time::Duration;
+
+    let (filter, mut ctx) = make_armed_context();
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+
+    let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
+    let started = state.started_at.expect("first chunk must start the deadline");
+    state.timeout = Duration::from_secs(1);
+    let now = started + Duration::from_millis(750);
+    let remaining = super::remaining_timeout(&state, now);
+    assert!(
+        remaining <= Duration::from_millis(250),
+        "after the first chunk the next cap must be the leftover budget, not another full period: {remaining:?}"
+    );
+    assert!(
+        remaining > Duration::ZERO,
+        "750ms of a 1s budget must still leave headroom"
+    );
+    ctx.insert_filter_state(state);
+}
+
+#[test]
+fn remaining_timeout_caps_selected_peer_after_first_chunk() {
+    use std::{sync::Arc, time::Duration};
+
+    use praxis_core::connectivity::{ConnectionOptions, Upstream};
+
+    let (filter, mut ctx) = make_armed_context();
+    ctx.upstream = Some(Upstream {
+        address: Arc::from("127.0.0.1:9"),
+        authority: None,
+        tls: None,
+        connection: Arc::new(ConnectionOptions {
+            read_timeout: Some(Duration::from_secs(30)),
+            ..ConnectionOptions::default()
+        }),
+    });
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+
+    let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
+    let started = state.started_at.expect("first chunk must start the deadline");
+    state.timeout = Duration::from_secs(1);
+    let remaining = super::remaining_timeout(&state, started + Duration::from_millis(750));
+    ctx.insert_filter_state(state);
+    super::cap_upstream_read_timeout(&mut ctx, remaining);
+
+    let applied = ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout);
+    assert!(
+        applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
+        "the selected peer must be recapped to leftover budget, got {applied:?}"
+    );
+}
+
+#[test]
+fn io_before_first_chunk_is_not_a_stream_timeout() {
+    use std::time::Instant;
+
+    let (_filter, ctx) = make_armed_context();
+    let state = ctx.get_filter_state::<StreamEventsState>().unwrap();
+    assert!(
+        !super::io_exceeded_stream_deadline(state, Instant::now()),
+        "a transport reset before any SSE chunk is not the stream deadline"
+    );
+}
+
+#[test]
+fn io_before_deadline_is_not_a_stream_timeout() {
+    use std::time::{Duration, Instant};
+
+    let (filter, mut ctx) = make_armed_context();
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+    let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
+    state.timeout = Duration::from_secs(300);
+    assert!(
+        !super::io_exceeded_stream_deadline(&state, Instant::now()),
+        "a truncated chunk must not be labelled a timeout"
+    );
+}
+
+#[test]
+fn io_after_deadline_is_a_stream_timeout() {
+    use std::time::Duration;
+
+    let (filter, mut ctx) = make_armed_context();
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+    let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
+    let started = state.started_at.expect("first chunk must start the deadline");
+    state.timeout = Duration::from_secs(1);
+    assert!(
+        super::io_exceeded_stream_deadline(&state, started + Duration::from_secs(1)),
+        "an Io abort after timeout_secs from the first chunk is the stream deadline"
     );
 }
 
