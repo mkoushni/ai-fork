@@ -422,20 +422,22 @@ fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration)
     opts.read_timeout = Some(opts.read_timeout.map_or(timeout, |existing| existing.min(timeout)));
 }
 
-/// Treat an IRR idle or deadline abort as a stream timeout.
+/// Treat an IRR idle, deadline, or peer-read abort as a stream timeout.
 ///
 /// Those failures arrive as end-of-stream with [`StreamTerminationCause`]
 /// set, not as another SSE chunk, so [`check_timeout`] never ran while
-/// the backend was silent. A backend that already sent a terminal event
-/// can still trip this timer while closing the HTTP body; that is not a
-/// stream error.
+/// the backend was silent. Praxis 0.5.4 reports a winning peer
+/// `read_timeout` as [`StreamTerminationCause::Io`], not `IdleTimeout`;
+/// leaving that unhandled makes IRR discard the logical error bytes.
+/// A backend that already sent a terminal event can still trip this
+/// timer while closing the HTTP body; that is not a stream error.
 fn record_idle_transport_timeout(ctx: &mut HttpFilterContext<'_>) {
     let Some(cause) = ctx.stream_termination().map(praxis_filter::StreamTermination::cause) else {
         return;
     };
     if !matches!(
         cause,
-        StreamTerminationCause::IdleTimeout | StreamTerminationCause::DeadlineExceeded
+        StreamTerminationCause::IdleTimeout | StreamTerminationCause::DeadlineExceeded | StreamTerminationCause::Io
     ) {
         return;
     }
