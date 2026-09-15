@@ -5038,7 +5038,7 @@ async fn remaining_timeout_recaps_peer_restored_onto_irr_body_context() {
     let applied = ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout);
     assert!(
         applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
-        "leftover budget must recap the restored peer instead of restarting the full per-read timer, got {applied:?}"
+        "leftover budget must be published on the restored peer so the executor can recap the live body, got {applied:?}"
     );
 }
 

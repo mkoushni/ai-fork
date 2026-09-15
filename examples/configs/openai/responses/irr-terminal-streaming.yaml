@@ -68,7 +68,7 @@ filter_chains:
 
               # After load_balancer so timeout_secs can cap the selected peer.
               # Later chunks restore that peer onto IRR body contexts and recap
-              # leftover budget instead of restarting the full per-read timer.
+              # leftover budget so the executor can copy it onto the live body.
               - filter: openai_stream_events
             on_result:
               - default: true

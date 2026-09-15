@@ -86,8 +86,9 @@ pub(super) struct StreamEventsState {
     ///
     /// IRR reconstructs response-body contexts with `ctx.upstream: None`
     /// after snapshotting this peer's `read_timeout` into the live body.
-    /// Remaining-budget recaps restore this handle so leftover `timeout_secs`
-    /// is applied to the same connection options the next read should use.
+    /// Remaining-budget recaps restore this handle so leftover
+    /// `timeout_secs` is published on `ctx.upstream` for the streaming
+    /// executor to copy onto the active `SubResponseBody` timer.
     selected_peer: Option<Upstream>,
     /// Timestamp when a terminal state was first observed.
     completed_at: Option<Instant>,
@@ -138,7 +139,7 @@ pub(super) struct StreamEventsState {
 /// peer; `openai_responses_proxy` buffers the request body, so IRR runs
 /// that phase before load balancing. Each later chunk restores that peer
 /// onto IRR body contexts (which have `upstream: None`) and recaps leftover
-/// budget so a stall near the deadline cannot restart the full per-read timer.
+/// budget so the streaming executor can copy that cap onto the live body.
 ///
 /// # YAML
 ///
@@ -447,7 +448,9 @@ fn remaining_timeout(state: &StreamEventsState, now: Instant) -> Duration {
 /// No-op until load balancing has set `ctx.upstream`. A tighter cluster
 /// `read_timeout` is left in place. IRR reconstructs response-body
 /// contexts with `upstream: None`, so later remaining-budget recaps
-/// restore [`StreamEventsState::selected_peer`] first.
+/// restore [`StreamEventsState::selected_peer`] first. The streaming
+/// executor then copies leftover `ctx.upstream.read_timeout` onto the
+/// live body.
 fn apply_remaining_peer_read_timeout(ctx: &mut HttpFilterContext<'_>) {
     let timeout = ctx
         .get_filter_state::<StreamEventsState>()
@@ -468,10 +471,11 @@ fn remember_selected_peer(ctx: &mut HttpFilterContext<'_>) {
 
 /// Restore the selected peer onto an IRR response-body context.
 ///
-/// Praxis copies the original `read_timeout` into the live body at
-/// dispatch and reconstructs body contexts with `ctx.upstream: None`.
-/// Recapping leftover `timeout_secs` would otherwise be a silent no-op
-/// and the next stall would restart the full per-read timer (~2T).
+/// Praxis already copied the original `read_timeout` into the live
+/// [`SubResponseBody`](praxis_core::subrequest::SubResponseBody) at
+/// dispatch. Recapping leftover `timeout_secs` on this restored object
+/// does not change that snapshot; the streaming executor copies leftover
+/// `ctx.upstream.read_timeout` onto the live body after this pass.
 fn restore_selected_peer(ctx: &mut HttpFilterContext<'_>, state: &StreamEventsState) {
     if ctx.upstream.is_none() {
         ctx.upstream.clone_from(&state.selected_peer);
@@ -480,9 +484,10 @@ fn restore_selected_peer(ctx: &mut HttpFilterContext<'_>, state: &StreamEventsSt
 
 /// Cap the selected peer's per-read timeout at `timeout`.
 ///
-/// Pingora and IRR streaming reads wake on this timer even when the
-/// backend sends no further SSE bytes. No-op until the selected peer is
-/// present on `ctx.upstream` (directly, or restored from arm).
+/// At arm time this is snapshotted into the live body. On later chunks
+/// leftover budget is published on `ctx.upstream` so the streaming
+/// executor can recap that live timer. No-op until the selected peer is
+/// present (directly, or restored from arm).
 fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration) {
     let Some(upstream) = ctx.upstream.as_mut() else {
         return;

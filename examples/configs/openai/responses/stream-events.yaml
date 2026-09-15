@@ -108,8 +108,8 @@ filter_chains:
               # sees ctx.upstream. timeout_secs is an absolute deadline from
               # the first SSE chunk (default 300). Later chunks restore that
               # peer onto IRR body contexts (which have upstream: None) and
-              # recap leftover budget so a stall near the deadline cannot
-              # restart the full per-read timer.
+              # recap leftover budget so the streaming executor can copy it
+              # onto the live body instead of restarting the original timer.
               - filter: openai_stream_events
                 # max_tool_call_argument_bytes: 1048576
                 # Aggregate accumulation budget bounding total process memory even
