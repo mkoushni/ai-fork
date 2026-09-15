@@ -4097,6 +4097,7 @@ fn parse_error_sets_metadata() {
         max_events: 100_000,
         timeout: std::time::Duration::from_secs(300),
         started_at: None,
+        selected_peer: None,
         completed_at: None,
         completion_state: CompletionState::Open,
         tool_call_args: std::collections::HashMap::new(),
@@ -4982,6 +4983,62 @@ fn remaining_timeout_caps_selected_peer_after_first_chunk() {
     assert!(
         applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
         "the selected peer must be recapped to leftover budget, got {applied:?}"
+    );
+}
+
+#[tokio::test]
+async fn remaining_timeout_recaps_peer_restored_onto_irr_body_context() {
+    use std::{sync::Arc, time::Duration};
+
+    use praxis_core::connectivity::{ConnectionOptions, Upstream};
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str("timeout_secs: 1").unwrap();
+    let filter = OpenaiStreamEventsFilter::build(&yaml).unwrap();
+    let req = make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(Box::leak(Box::new(req)));
+    ctx.set_metadata("openai_responses_format.format", "openai_responses".to_owned());
+    ctx.set_metadata("openai_responses_format.stream", "true".to_owned());
+    ctx.current_filter_id = Some(0);
+    ctx.upstream = Some(Upstream {
+        address: Arc::from("127.0.0.1:9"),
+        authority: None,
+        tls: None,
+        connection: Arc::new(ConnectionOptions {
+            read_timeout: Some(Duration::from_secs(30)),
+            ..ConnectionOptions::default()
+        }),
+    });
+
+    filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
+    assert!(
+        ctx.get_filter_state::<StreamEventsState>()
+            .is_some_and(|state| state.selected_peer.is_some()),
+        "arm after load balancing must remember the selected peer for IRR body recaps"
+    );
+
+    // IRR reconstructs response-body contexts with upstream: None.
+    ctx.upstream = None;
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+    assert!(
+        ctx.upstream.is_some(),
+        "a chunk on an IRR body context must restore the selected peer before recapping"
+    );
+
+    let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
+    let started = state.started_at.expect("first chunk must start the deadline");
+    state.timeout = Duration::from_secs(1);
+    state.started_at = Some(started.checked_sub(Duration::from_millis(750)).unwrap_or(started));
+    ctx.insert_filter_state(state);
+    ctx.upstream = None;
+
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+
+    let applied = ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout);
+    assert!(
+        applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
+        "leftover budget must recap the restored peer instead of restarting the full per-read timer, got {applied:?}"
     );
 }
 

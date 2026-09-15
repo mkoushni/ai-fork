@@ -67,6 +67,8 @@ filter_chains:
                       - "127.0.0.1:3001"
 
               # After load_balancer so timeout_secs can cap the selected peer.
+              # Later chunks restore that peer onto IRR body contexts and recap
+              # leftover budget instead of restarting the full per-read timer.
               - filter: openai_stream_events
             on_result:
               - default: true

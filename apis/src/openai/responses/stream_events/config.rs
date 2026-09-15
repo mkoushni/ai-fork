@@ -32,8 +32,11 @@ pub(crate) struct StreamEventsConfig {
     /// The parser enforces this absolute deadline when chunks or
     /// end-of-stream arrive. Place the filter after `load_balancer` so
     /// `on_request` can cap the selected peer's `read_timeout` at the
-    /// remaining budget (the full timeout before the first chunk). A
-    /// tighter cluster `read_timeout_ms` is left in place.
+    /// remaining budget (the full timeout before the first chunk). IRR
+    /// response-body contexts drop `ctx.upstream`, so each later chunk
+    /// restores that peer and recaps leftover budget instead of
+    /// restarting the full per-read timer. A tighter cluster
+    /// `read_timeout_ms` is left in place.
     /// Default: 300 (5 minutes).
     #[serde(default)]
     pub timeout_secs: Option<u64>,

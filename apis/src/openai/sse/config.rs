@@ -30,7 +30,8 @@ pub(crate) struct SseParserConfig {
     ///
     /// Enforced when chunks or end-of-stream arrive. Idle gaps with no
     /// body traffic wake through the remaining peer `read_timeout` cap
-    /// applied by `openai_stream_events` after load balancing.
+    /// applied by `openai_stream_events` after load balancing and recapped
+    /// onto the restored selected peer after each chunk.
     pub timeout: Duration,
 }
 
