@@ -3376,8 +3376,8 @@ dependencies = [
  "http 1.5.0",
  "jsonschema",
  "percent-encoding",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "quixotic-plecostomus-core",
  "reqwest",
  "rmcp",
@@ -3425,8 +3425,8 @@ dependencies = [
  "notify",
  "percent-encoding",
  "praxis-ai-apis",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "rand 0.10.2",
  "redis",
  "reqwest",
@@ -3454,8 +3454,8 @@ dependencies = [
  "bytes",
  "futures",
  "http 1.5.0",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "prost",
  "prost-build",
  "prost-types",
@@ -3488,10 +3488,10 @@ dependencies = [
  "praxis-ai-build-support",
  "praxis-ai-filters",
  "praxis-ai-llmd-ext-proc",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-proxy-protocol",
- "praxis-proxy-tls",
+ "praxis-proxy-tls 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "quixotic-plecostomus-core",
  "serde",
  "tempfile",
@@ -3725,14 +3725,15 @@ dependencies = [
 [[package]]
 name = "praxis-proxy"
 version = "0.5.5"
-source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87b77bf6a6713b8935f76e7e26ad50df9f183b14a9ae8124b61719c853f0aaa9"
 dependencies = [
  "cargo_metadata",
  "clap",
  "nix",
  "notify",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "praxis-proxy-filter 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "praxis-proxy-protocol",
  "serde",
  "tikv-jemallocator",
@@ -3745,7 +3746,8 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-core"
 version = "0.5.5"
-source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34a2517ad4d0f99eee4a259fd53e395295acf1705dd6116c64f6779653f36755"
 dependencies = [
  "bytes",
  "chrono",
@@ -3753,7 +3755,32 @@ dependencies = [
  "http 1.5.0",
  "metrics",
  "percent-encoding",
- "praxis-proxy-tls",
+ "praxis-proxy-tls 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quixotic-plecostomus-core",
+ "quixotic-plecostomus-http",
+ "rand 0.10.2",
+ "regex",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "yaml_serde",
+]
+
+[[package]]
+name = "praxis-proxy-core"
+version = "0.5.5"
+source = "git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+dependencies = [
+ "bytes",
+ "chrono",
+ "dashmap",
+ "http 1.5.0",
+ "metrics",
+ "percent-encoding",
+ "praxis-proxy-tls 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "quixotic-plecostomus-core",
  "quixotic-plecostomus-http",
  "rand 0.10.2",
@@ -3770,7 +3797,36 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-filter"
 version = "0.5.5"
-source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9947c41bb8a268f9b08f1dd8a1e7c13c9f9c73ea87e5ba21d9506761be178783"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "http 1.5.0",
+ "metrics",
+ "percent-encoding",
+ "praxis-proxy-core 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "praxis-proxy-tls 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quixotic-plecostomus-core",
+ "rand 0.10.2",
+ "regex",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "yaml_serde",
+ "zeroize",
+]
+
+[[package]]
+name = "praxis-proxy-filter"
+version = "0.5.5"
+source = "git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3781,8 +3837,8 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "praxis-policy",
- "praxis-proxy-core",
- "praxis-proxy-tls",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-tls 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "quixotic-plecostomus-core",
  "rand 0.10.2",
  "regex",
@@ -3800,7 +3856,8 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-protocol"
 version = "0.5.5"
-source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "922c2b82231b8405bd7890f71963583b315fb7e68eb20f1b5130ac963d1d0afc"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3809,9 +3866,9 @@ dependencies = [
  "http 1.5.0",
  "metrics",
  "metrics-exporter-prometheus",
- "praxis-proxy-core",
- "praxis-proxy-filter",
- "praxis-proxy-tls",
+ "praxis-proxy-core 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "praxis-proxy-filter 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "praxis-proxy-tls 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "quixotic-plecostomus-core",
  "quixotic-plecostomus-http",
  "quixotic-plecostomus-proxy",
@@ -3827,7 +3884,8 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-tls"
 version = "0.5.5"
-source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58a397ee64194188051ebb792179ef19edd688836aa8f154cc78f9fe69da0cc0"
 dependencies = [
  "arc-swap",
  "notify",
@@ -3835,6 +3893,18 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "praxis-proxy-tls"
+version = "0.5.5"
+source = "git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
+dependencies = [
+ "rustls",
+ "serde",
+ "thiserror",
  "tracing",
  "zeroize",
 ]
@@ -3857,8 +3927,8 @@ dependencies = [
  "praxis-ai-llmd-ext-proc",
  "praxis-ai-proxy",
  "praxis-proxy",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-proxy-protocol",
  "quixotic-plecostomus-core",
  "rand 0.10.2",
@@ -3885,7 +3955,7 @@ name = "praxis-tests-environment"
 version = "0.3.0"
 dependencies = [
  "praxis-ai-proxy",
- "praxis-proxy-core",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-test-utils",
  "serde_json",
 ]
@@ -3901,8 +3971,8 @@ dependencies = [
  "http 1.5.0",
  "nix",
  "praxis-ai-proxy",
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-test-utils",
  "rustls-pemfile",
  "serde",
@@ -3919,8 +3989,8 @@ dependencies = [
 name = "praxis-tests-schema"
 version = "0.3.0"
 dependencies = [
- "praxis-proxy-core",
- "praxis-proxy-filter",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
+ "praxis-proxy-filter 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-test-utils",
  "tempfile",
  "yaml_serde",
@@ -6932,7 +7002,7 @@ dependencies = [
  "clap",
  "praxis-ai-apis",
  "praxis-ai-proxy",
- "praxis-proxy-core",
+ "praxis-proxy-core 0.5.5 (git+https://github.com/praxis-proxy/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3)",
  "praxis-test-utils",
  "quote",
  "reqwest",
