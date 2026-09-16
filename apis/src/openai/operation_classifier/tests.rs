@@ -71,6 +71,37 @@ async fn classifies_a_conversations_operation() {
 }
 
 #[tokio::test]
+async fn classifies_a_chat_completions_operation() {
+    let filter = default_filter();
+    let request = req("POST", "/v1/chat/completions");
+    let mut ctx = make_filter_context(&request);
+    drop(filter.on_request(&mut ctx).await.unwrap());
+
+    let matched = ctx.extensions.get::<OpenAiOperationMatch>().copied().unwrap();
+    assert_eq!(matched.family, OpenAiApiFamily::ChatCompletions);
+    assert_eq!(matched.operation_id, "createChatCompletion");
+    assert_eq!(matched.transport, OpenAiTransport::Http);
+
+    assert_eq!(
+        ctx.filter_metadata
+            .get("openai_operation.application_protocol")
+            .map(String::as_str),
+        Some("openai_chat_completions")
+    );
+}
+
+#[tokio::test]
+async fn chat_completions_classification_does_not_depend_on_body() {
+    let filter = default_filter();
+    let request = req("POST", "/v1/chat/completions");
+    let mut ctx = make_filter_context(&request);
+    drop(filter.on_request(&mut ctx).await.unwrap());
+
+    let matched = ctx.extensions.get::<OpenAiOperationMatch>().copied().unwrap();
+    assert_eq!(matched.operation_id, "createChatCompletion");
+}
+
+#[tokio::test]
 async fn classifies_a_responses_operation() {
     let filter = default_filter();
     let request = req("POST", "/v1/responses");
@@ -188,6 +219,7 @@ async fn static_endpoints_are_not_consumed_as_identifiers() {
 async fn unsupported_methods_publish_no_operation() {
     for (method, path) in [
         ("PUT", "/v1/responses"),
+        ("PUT", "/v1/chat/completions"),
         ("PATCH", "/v1/conversations/conv_1"),
         ("DELETE", "/v1/responses"),
     ] {

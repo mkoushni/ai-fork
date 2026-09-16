@@ -33,6 +33,7 @@ use tracing::debug;
 
 use self::config::{OperationClassifierConfig, ValidatedConfig, build_config};
 use crate::openai::{
+    chat_completions::routes as chat_completions_routes,
     conversations::routes as conversations_routes,
     operation::{OpenAiApiFamily, OpenAiTransport},
     responses::routes as responses_routes,
@@ -179,6 +180,17 @@ fn publish_match(ctx: &mut HttpFilterContext<'_>, matched: OpenAiOperationMatch)
 fn classify(method: &str, path: &str, transport: OpenAiTransport) -> Option<OpenAiOperationMatch> {
     if let Some(route) = conversations_routes::match_route(method, path) {
         // Conversations is reached over plain HTTP only.
+        if transport == OpenAiTransport::Http {
+            return Some(OpenAiOperationMatch {
+                family: route.spec.family,
+                operation_id: route.spec.operation_id,
+                transport: route.spec.transport,
+            });
+        }
+    }
+
+    if let Some(route) = chat_completions_routes::match_route(method, path) {
+        // Chat Completions is reached over plain HTTP only.
         if transport == OpenAiTransport::Http {
             return Some(OpenAiOperationMatch {
                 family: route.spec.family,

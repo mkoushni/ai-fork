@@ -25,6 +25,8 @@ mod print;
 mod reference;
 /// Responses registry drift check against the pinned specification.
 mod responses_registry;
+/// Chat Completions registry drift check against the pinned specification.
+mod chat_completions_registry;
 /// Semantic YAML tree used for full-spec projection.
 mod semantic_yaml;
 /// `OpenAPI` spec loading and operation extraction.
@@ -120,6 +122,17 @@ pub(crate) struct Args {
 /// Run the Responses registry drift check and report the outcome.
 pub(crate) fn run_responses_registry_check() {
     match responses_registry::check() {
+        Ok(summary) => println!("{summary}"),
+        Err(failures) => {
+            eprintln!("{failures}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Run the Chat Completions registry drift check and report the outcome.
+pub(crate) fn run_chat_completions_registry_check() {
+    match chat_completions_registry::check() {
         Ok(summary) => println!("{summary}"),
         Err(failures) => {
             eprintln!("{failures}");
