@@ -427,6 +427,12 @@ fn remaining_timeout(state: &StreamEventsState, now: Instant) -> Duration {
     }
 }
 
+/// Publish leftover stream budget for the streaming executor to copy onto
+/// the live body after this body-filter pass.
+fn recap_stream_read_timeout(ctx: &mut HttpFilterContext<'_>, remaining: Duration) {
+    ctx.cap_stream_read_timeout(remaining);
+}
+
 /// Whether an `Io` termination is the stream deadline, not a reset.
 ///
 /// Praxis 0.5.4 reports a winning peer `read_timeout` as
@@ -499,8 +505,8 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>) {
     let parsed = parse_and_accumulate(&mut state, ctx, bytes, now);
     handle_parse_result(ctx, body, &state, parsed);
 
-    if remaining > Duration::ZERO {
-        ctx.cap_stream_read_timeout(remaining);
+    if state.started_at.is_some() {
+        recap_stream_read_timeout(ctx, remaining);
     }
     ctx.insert_filter_state(state);
 }
@@ -1903,7 +1909,7 @@ fn check_timeout(state: &StreamEventsState, now: Instant) -> Result<(), SseParse
         return Ok(());
     };
     let elapsed = now.duration_since(started_at);
-    if elapsed > state.timeout {
+    if elapsed >= state.timeout {
         return Err(SseParseError::Timeout {
             elapsed,
             limit: state.timeout,

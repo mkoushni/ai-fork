@@ -4952,6 +4952,29 @@ fn remaining_timeout_shrinks_after_first_chunk() {
 }
 
 #[test]
+fn first_chunk_recaps_full_timeout_onto_live_body() {
+    use std::time::Duration;
+
+    let (filter, mut ctx) = make_armed_context();
+    let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+
+    let timeout = ctx
+        .get_filter_state::<StreamEventsState>()
+        .map(|state| state.timeout)
+        .expect("parser state must remain installed");
+    assert_eq!(
+        ctx.stream_read_timeout_cap(),
+        Some(timeout),
+        "the first chunk must publish the full timeout_secs budget for the next upstream read"
+    );
+    assert!(
+        timeout <= Duration::from_secs(300),
+        "unexpected test timeout budget: {timeout:?}"
+    );
+}
+
+#[test]
 fn remaining_timeout_caps_live_body_after_first_chunk() {
     use std::time::Duration;
 
@@ -4964,7 +4987,7 @@ fn remaining_timeout_caps_live_body_after_first_chunk() {
     state.timeout = Duration::from_secs(1);
     let remaining = super::remaining_timeout(&state, started + Duration::from_millis(750));
     ctx.insert_filter_state(state);
-    ctx.cap_stream_read_timeout(remaining);
+    super::recap_stream_read_timeout(&mut ctx, remaining);
 
     let applied = ctx.stream_read_timeout_cap();
     assert!(

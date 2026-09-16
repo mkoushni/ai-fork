@@ -294,9 +294,9 @@ async fn stream_events_idle_backend_is_cut_off_by_read_timeout() {
     let (db_url, db_path) = temp_sqlite_url("stream_events_idle");
     let yaml = std::fs::read_to_string(example_config_path("openai/responses/stream-events.yaml"))
         .expect("example config should exist");
-# `openai_stream_events` sits after load_balancer in the example so IRR
-# body hooks see the selected peer. Do not also shrink `read_timeout_ms`;
-# that would hide a missing live-body recap.
+    // `openai_stream_events` sits after load_balancer in the example so IRR
+    // body hooks see the selected peer. Do not also shrink `read_timeout_ms`;
+    // that would hide a missing live-body recap.
     let yaml = yaml.replace("sqlite://responses.db?mode=rwc", &db_url).replace(
         "              - filter: openai_stream_events\n",
         "              - filter: openai_stream_events\n                timeout_secs: 1\n",
