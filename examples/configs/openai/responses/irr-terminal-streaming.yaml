@@ -66,9 +66,9 @@ filter_chains:
                     endpoints:
                       - "127.0.0.1:3001"
 
-              # After load_balancer so timeout_secs can cap the selected peer.
-              # Later chunks restore that peer onto IRR body contexts and recap
-              # leftover budget so the executor can copy it onto the live body.
+              # After load_balancer so IRR body hooks see the selected peer.
+              # timeout_secs starts at the first SSE chunk; each chunk recaps
+              # leftover budget onto the live body.
               - filter: openai_stream_events
             on_result:
               - default: true

@@ -30,16 +30,13 @@ pub(crate) struct StreamEventsConfig {
     /// Maximum seconds from the first SSE chunk to stream completion.
     ///
     /// The parser enforces this absolute deadline when chunks or
-    /// end-of-stream arrive. Place the filter after `load_balancer` so
-    /// `on_request` can cap the selected peer's `read_timeout` at the
-    /// remaining budget (the full timeout before the first chunk). IRR
-    /// snapshots that timeout into the live body and reconstructs later
-    /// contexts with `ctx.upstream: None`. Each chunk restores the
-    /// selected peer and recaps leftover budget so the streaming
-    /// executor can copy that cap onto the live body; mutating a
-    /// detached peer alone would leave the original per-read timer
-    /// running. A tighter cluster `read_timeout_ms` is left in place.
-    /// Default: 300 (5 minutes).
+    /// end-of-stream arrive. Before the first chunk, cluster
+    /// `read_timeout_ms` applies; `timeout_secs` does not start until
+    /// the first SSE chunk. Each later chunk calls
+    /// [`HttpFilterContext::cap_stream_read_timeout`] with leftover
+    /// budget so the streaming executor copies that cap onto the live
+    /// body instead of restarting the original per-read timer. A tighter
+    /// cluster `read_timeout_ms` is left in place. Default: 300 (5 minutes).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 

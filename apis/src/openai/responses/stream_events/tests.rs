@@ -4097,7 +4097,6 @@ fn parse_error_sets_metadata() {
         max_events: 100_000,
         timeout: std::time::Duration::from_secs(300),
         started_at: None,
-        selected_peer: None,
         completed_at: None,
         completion_state: CompletionState::Open,
         tool_call_args: std::collections::HashMap::new(),
@@ -4837,8 +4836,8 @@ async fn on_response_preserves_content_length_when_not_armed() {
 }
 
 #[tokio::test]
-async fn apply_arm_caps_selected_peer_read_timeout_at_stream_budget() {
-    use std::{sync::Arc, time::Duration};
+async fn apply_arm_does_not_cap_timeout_before_first_chunk() {
+    use std::sync::Arc;
 
     use praxis_core::connectivity::{ConnectionOptions, Upstream};
 
@@ -4858,10 +4857,9 @@ async fn apply_arm_caps_selected_peer_read_timeout_at_stream_budget() {
 
     filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
 
-    assert_eq!(
-        ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
-        Some(Duration::from_secs(1)),
-        "after load balancing, armed stream_events must cap the selected peer so idle backends wake"
+    assert!(
+        ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout).is_none(),
+        "timeout_secs must not cap upstream reads before the first SSE chunk"
     );
 }
 
@@ -4912,20 +4910,20 @@ async fn apply_arm_keeps_a_tighter_cluster_read_timeout() {
     assert_eq!(
         ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout),
         Some(Duration::from_millis(250)),
-        "a tighter cluster read timeout must not be relaxed to timeout_secs"
+        "arming must not relax a tighter cluster read timeout before the first chunk"
     );
 }
 
 #[test]
-fn remaining_timeout_is_full_budget_before_first_chunk() {
-    use std::time::Instant;
+fn remaining_timeout_is_zero_before_first_chunk() {
+    use std::time::{Duration, Instant};
 
     let (_filter, ctx) = make_armed_context();
     let state = ctx.get_filter_state::<StreamEventsState>().unwrap();
     assert_eq!(
         super::remaining_timeout(state, Instant::now()),
-        state.timeout,
-        "before the first SSE chunk the remaining budget is timeout_secs"
+        Duration::ZERO,
+        "timeout_secs must not start before the first SSE chunk"
     );
 }
 
@@ -4954,21 +4952,10 @@ fn remaining_timeout_shrinks_after_first_chunk() {
 }
 
 #[test]
-fn remaining_timeout_caps_selected_peer_after_first_chunk() {
-    use std::{sync::Arc, time::Duration};
-
-    use praxis_core::connectivity::{ConnectionOptions, Upstream};
+fn remaining_timeout_caps_live_body_after_first_chunk() {
+    use std::time::Duration;
 
     let (filter, mut ctx) = make_armed_context();
-    ctx.upstream = Some(Upstream {
-        address: Arc::from("127.0.0.1:9"),
-        authority: None,
-        tls: None,
-        connection: Arc::new(ConnectionOptions {
-            read_timeout: Some(Duration::from_secs(30)),
-            ..ConnectionOptions::default()
-        }),
-    });
     let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
     filter.on_response_body(&mut ctx, &mut body, false).unwrap();
 
@@ -4977,17 +4964,17 @@ fn remaining_timeout_caps_selected_peer_after_first_chunk() {
     state.timeout = Duration::from_secs(1);
     let remaining = super::remaining_timeout(&state, started + Duration::from_millis(750));
     ctx.insert_filter_state(state);
-    super::cap_upstream_read_timeout(&mut ctx, remaining);
+    ctx.cap_stream_read_timeout(remaining);
 
-    let applied = ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout);
+    let applied = ctx.stream_read_timeout_cap();
     assert!(
         applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
-        "the selected peer must be recapped to leftover budget, got {applied:?}"
+        "leftover budget must be published on the live body, got {applied:?}"
     );
 }
 
 #[tokio::test]
-async fn remaining_timeout_recaps_peer_restored_onto_irr_body_context() {
+async fn remaining_timeout_recaps_live_body_on_irr_body_context() {
     use std::{sync::Arc, time::Duration};
 
     use praxis_core::connectivity::{ConnectionOptions, Upstream};
@@ -5010,35 +4997,25 @@ async fn remaining_timeout_recaps_peer_restored_onto_irr_body_context() {
     });
 
     filter.apply_arm_decision(&mut ctx, ArmDecision::Arm);
-    assert!(
-        ctx.get_filter_state::<StreamEventsState>()
-            .is_some_and(|state| state.selected_peer.is_some()),
-        "arm after load balancing must remember the selected peer for IRR body recaps"
-    );
 
     // IRR reconstructs response-body contexts with upstream: None.
     ctx.upstream = None;
     let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
     filter.on_response_body(&mut ctx, &mut body, false).unwrap();
-    assert!(
-        ctx.upstream.is_some(),
-        "a chunk on an IRR body context must restore the selected peer before recapping"
-    );
 
     let mut state = ctx.remove_filter_state::<StreamEventsState>().unwrap();
     let started = state.started_at.expect("first chunk must start the deadline");
     state.timeout = Duration::from_secs(1);
     state.started_at = Some(started.checked_sub(Duration::from_millis(750)).unwrap_or(started));
     ctx.insert_filter_state(state);
-    ctx.upstream = None;
 
     let mut body = Some(make_sse_chunk("response.output_text.delta", &json!({"text": "hi"})));
     filter.on_response_body(&mut ctx, &mut body, false).unwrap();
 
-    let applied = ctx.upstream.as_ref().and_then(|u| u.connection.read_timeout);
+    let applied = ctx.stream_read_timeout_cap();
     assert!(
         applied.is_some_and(|timeout| timeout <= Duration::from_millis(250)),
-        "leftover budget must be published on the restored peer so the executor can recap the live body, got {applied:?}"
+        "leftover budget must be published for the live body even when ctx.upstream is None, got {applied:?}"
     );
 }
 

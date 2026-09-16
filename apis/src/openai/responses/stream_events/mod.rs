@@ -22,13 +22,11 @@ mod local_tools;
 use std::{
     collections::{BTreeSet, hash_map::DefaultHasher},
     hash::{Hash as _, Hasher as _},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use praxis_core::connectivity::{ConnectionOptions, Upstream};
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, IterationState,
     StreamTerminationCause, SubRequestResponseMode, parse_filter_config,
@@ -82,14 +80,6 @@ pub(super) struct StreamEventsState {
     timeout: Duration,
     /// Timestamp of first chunk.
     started_at: Option<Instant>,
-    /// Selected peer captured after load balancing.
-    ///
-    /// IRR reconstructs response-body contexts with `ctx.upstream: None`
-    /// after snapshotting this peer's `read_timeout` into the live body.
-    /// Remaining-budget recaps restore this handle so leftover
-    /// `timeout_secs` is published on `ctx.upstream` for the streaming
-    /// executor to copy onto the active `SubResponseBody` timer.
-    selected_peer: Option<Upstream>,
     /// Timestamp when a terminal state was first observed.
     completed_at: Option<Instant>,
     /// Stream completion state (`Open` / `TerminalLifecycle` / `Error`).
@@ -135,11 +125,10 @@ pub(super) struct StreamEventsState {
 ///
 /// Must run inside an `iterative_request_router` step. Running it
 /// elsewhere is a misconfiguration and fails closed at request time.
-/// Place it after `load_balancer` so `timeout_secs` can cap the selected
-/// peer; `openai_responses_proxy` buffers the request body, so IRR runs
-/// that phase before load balancing. Each later chunk restores that peer
-/// onto IRR body contexts (which have `upstream: None`) and recaps leftover
-/// budget so the streaming executor can copy that cap onto the live body.
+/// Place it after `load_balancer` so IRR body hooks run with a selected
+/// peer when needed. `timeout_secs` is an absolute deadline from the first
+/// SSE chunk; each chunk recaps leftover budget onto the live body through
+/// [`HttpFilterContext::cap_stream_read_timeout`].
 ///
 /// # YAML
 ///
@@ -207,7 +196,6 @@ impl OpenaiStreamEventsFilter {
             max_events: self.parser_config.max_events,
             timeout: self.parser_config.timeout,
             started_at: None,
-            selected_peer: None,
             completed_at: None,
             completion_state: CompletionState::Open,
             tool_call_args: std::collections::HashMap::new(),
@@ -285,11 +273,6 @@ impl OpenaiStreamEventsFilter {
                 // `Accept-Encoding` whenever logical parsing is armed so a
                 // compliant backend returns plaintext SSE.
                 ctx.request_headers_to_remove.push(http::header::ACCEPT_ENCODING);
-                if ctx.upstream.is_none() {
-                    debug!("stream_events timeout_secs not applied: load balancer has not selected ctx.upstream");
-                }
-                apply_remaining_peer_read_timeout(ctx);
-                remember_selected_peer(ctx);
                 None
             },
         }
@@ -433,73 +416,15 @@ impl HttpFilter for OpenaiStreamEventsFilter {
 
 /// Remaining time in the absolute deadline from the first SSE chunk.
 ///
-/// Before that chunk the full `timeout_secs` budget is still available
-/// for the first upstream read. After it, each cap uses only what is
-/// left so a stall near the deadline cannot run for another full period.
+/// Before the first chunk this returns zero so `timeout_secs` does not
+/// start on the live body. After the first chunk each recap uses only
+/// what is left so a stall near the deadline cannot run for another full
+/// period.
 fn remaining_timeout(state: &StreamEventsState, now: Instant) -> Duration {
     match state.started_at {
-        None => state.timeout,
+        None => Duration::ZERO,
         Some(started) => state.timeout.saturating_sub(now.duration_since(started)),
     }
-}
-
-/// Cap the selected peer's next read at the remaining stream budget.
-///
-/// No-op until load balancing has set `ctx.upstream`. A tighter cluster
-/// `read_timeout` is left in place. IRR reconstructs response-body
-/// contexts with `upstream: None`, so later remaining-budget recaps
-/// restore [`StreamEventsState::selected_peer`] first. The streaming
-/// executor then copies leftover `ctx.upstream.read_timeout` onto the
-/// live body.
-fn apply_remaining_peer_read_timeout(ctx: &mut HttpFilterContext<'_>) {
-    let timeout = ctx
-        .get_filter_state::<StreamEventsState>()
-        .map_or(Duration::ZERO, |state| remaining_timeout(state, Instant::now()));
-    if timeout.is_zero() {
-        return;
-    }
-    cap_upstream_read_timeout(ctx, timeout);
-}
-
-/// Keep the load-balanced peer so IRR body hooks can recap leftover budget.
-fn remember_selected_peer(ctx: &mut HttpFilterContext<'_>) {
-    let peer = ctx.upstream.clone();
-    if let Some(state) = ctx.get_filter_state_mut::<StreamEventsState>() {
-        state.selected_peer.clone_from(&peer);
-    }
-}
-
-/// Restore the selected peer onto an IRR response-body context.
-///
-/// Praxis already copied the original `read_timeout` into the live
-/// [`SubResponseBody`](praxis_core::subrequest::SubResponseBody) at
-/// dispatch. Recapping leftover `timeout_secs` on this restored object
-/// does not change that snapshot; the streaming executor copies leftover
-/// `ctx.upstream.read_timeout` onto the live body after this pass.
-fn restore_selected_peer(ctx: &mut HttpFilterContext<'_>, state: &StreamEventsState) {
-    if ctx.upstream.is_none() {
-        ctx.upstream.clone_from(&state.selected_peer);
-    }
-}
-
-/// Cap the selected peer's per-read timeout at `timeout`.
-///
-/// At arm time this is snapshotted into the live body. On later chunks
-/// leftover budget is published on `ctx.upstream` so the streaming
-/// executor can recap that live timer. No-op until the selected peer is
-/// present (directly, or restored from arm).
-fn cap_upstream_read_timeout(ctx: &mut HttpFilterContext<'_>, timeout: Duration) {
-    let Some(upstream) = ctx.upstream.as_mut() else {
-        return;
-    };
-    cap_connection_read_timeout(&mut upstream.connection, timeout);
-}
-
-/// Cap one connection's `read_timeout` at `timeout` without relaxing a
-/// tighter cluster value.
-fn cap_connection_read_timeout(connection: &mut Arc<ConnectionOptions>, timeout: Duration) {
-    let opts = Arc::make_mut(connection);
-    opts.read_timeout = Some(opts.read_timeout.map_or(timeout, |existing| existing.min(timeout)));
 }
 
 /// Whether an `Io` termination is the stream deadline, not a reset.
@@ -567,8 +492,6 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>) {
         return;
     };
 
-    restore_selected_peer(ctx, &state);
-
     let now = Instant::now();
     state.started_at.get_or_insert(now);
     let remaining = remaining_timeout(&state, now);
@@ -577,9 +500,8 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>) {
     handle_parse_result(ctx, body, &state, parsed);
 
     if remaining > Duration::ZERO {
-        cap_upstream_read_timeout(ctx, remaining);
+        ctx.cap_stream_read_timeout(remaining);
     }
-    state.selected_peer.clone_from(&ctx.upstream);
     ctx.insert_filter_state(state);
 }
 
