@@ -127,8 +127,8 @@ pub(super) struct StreamEventsState {
 /// elsewhere is a misconfiguration and fails closed at request time.
 /// Place it after `load_balancer` so IRR body hooks run with a selected
 /// peer when needed. `timeout_secs` is an absolute deadline from the first
-/// SSE chunk; each chunk recaps leftover budget onto the live body through
-/// [`HttpFilterContext::cap_stream_read_timeout`].
+/// SSE chunk; each chunk recaps that absolute cutoff onto the live body through
+/// [`HttpFilterContext::cap_stream_deadline`].
 ///
 /// # YAML
 ///
@@ -414,23 +414,15 @@ impl HttpFilter for OpenaiStreamEventsFilter {
     }
 }
 
-/// Remaining time in the absolute deadline from the first SSE chunk.
-///
-/// Before the first chunk this returns zero so `timeout_secs` does not
-/// start on the live body. After the first chunk each recap uses only
-/// what is left so a stall near the deadline cannot run for another full
-/// period.
-fn remaining_timeout(state: &StreamEventsState, now: Instant) -> Duration {
-    match state.started_at {
-        None => Duration::ZERO,
-        Some(started) => state.timeout.saturating_sub(now.duration_since(started)),
-    }
+/// Absolute deadline for `timeout_secs` from the first SSE chunk.
+fn stream_deadline_at(state: &StreamEventsState) -> Option<Instant> {
+    state.started_at.and_then(|started| started.checked_add(state.timeout))
 }
 
-/// Publish leftover stream budget for the streaming executor to copy onto
+/// Publish the absolute stream cutoff for the streaming executor to copy onto
 /// the live body after this body-filter pass.
-fn recap_stream_read_timeout(ctx: &mut HttpFilterContext<'_>, remaining: Duration) {
-    ctx.cap_stream_read_timeout(remaining);
+fn recap_stream_deadline(ctx: &mut HttpFilterContext<'_>, deadline: Instant) {
+    ctx.cap_stream_deadline(deadline);
 }
 
 /// Whether an `Io` termination is the stream deadline, not a reset.
@@ -500,13 +492,12 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>) {
 
     let now = Instant::now();
     state.started_at.get_or_insert(now);
-    let remaining = remaining_timeout(&state, now);
 
     let parsed = parse_and_accumulate(&mut state, ctx, bytes, now);
     handle_parse_result(ctx, body, &state, parsed);
 
-    if state.started_at.is_some() {
-        recap_stream_read_timeout(ctx, remaining);
+    if let Some(deadline) = stream_deadline_at(&state) {
+        recap_stream_deadline(ctx, deadline);
     }
     ctx.insert_filter_state(state);
 }

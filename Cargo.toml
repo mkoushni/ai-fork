@@ -88,13 +88,12 @@ tokio-stream = "0.1.19"
 zeroize = "1.9.0"
 
 # Praxis core dependencies
-# Pin to post-0.5.5 main until crates.io ships praxis-proxy/praxis#1172
-# (`HttpFilterContext::cap_stream_read_timeout` for live-body read-timeout recap).
-praxis-core = { git = "https://github.com/praxis-proxy/praxis", rev = "5f520fc2e7ede9b7c62b8a1d83023e59b4eda075", package = "praxis-proxy-core" }
-praxis-filter = { git = "https://github.com/praxis-proxy/praxis", rev = "5f520fc2e7ede9b7c62b8a1d83023e59b4eda075", package = "praxis-proxy-filter" }
-praxis-protocol = { git = "https://github.com/praxis-proxy/praxis", rev = "5f520fc2e7ede9b7c62b8a1d83023e59b4eda075", package = "praxis-proxy-protocol" }
-praxis-tls = { git = "https://github.com/praxis-proxy/praxis", rev = "5f520fc2e7ede9b7c62b8a1d83023e59b4eda075", package = "praxis-proxy-tls" }
-praxis = { git = "https://github.com/praxis-proxy/praxis", rev = "5f520fc2e7ede9b7c62b8a1d83023e59b4eda075", package = "praxis-proxy" }
+# Pin to mkoushni/praxis until praxis-proxy/praxis ships cap_stream_deadline.
+praxis-core = { git = "https://github.com/mkoushni/praxis", rev = "21be73269908b20f2b491c7c014bc37b83b24ff3", package = "praxis-proxy-core" }
+praxis-filter = { git = "https://github.com/mkoushni/praxis", rev = "21be73269908b20f2b491c7c014bc37b83b24ff3", package = "praxis-proxy-filter" }
+praxis-protocol = { git = "https://github.com/mkoushni/praxis", rev = "21be73269908b20f2b491c7c014bc37b83b24ff3", package = "praxis-proxy-protocol" }
+praxis-tls = { git = "https://github.com/mkoushni/praxis", rev = "21be73269908b20f2b491c7c014bc37b83b24ff3", package = "praxis-proxy-tls" }
+praxis = { git = "https://github.com/mkoushni/praxis", rev = "21be73269908b20f2b491c7c014bc37b83b24ff3", package = "praxis-proxy" }
 praxis-test-utils = { path = "tests/utils" }
 
 # AI-owned llm-d ext_proc compatibility layer

@@ -3725,7 +3725,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy"
 version = "0.5.5"
-source = "git+https://github.com/praxis-proxy/praxis?rev=5f520fc2e7ede9b7c62b8a1d83023e59b4eda075#5f520fc2e7ede9b7c62b8a1d83023e59b4eda075"
+source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "cargo_metadata",
  "clap",
@@ -3745,7 +3745,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-core"
 version = "0.5.5"
-source = "git+https://github.com/praxis-proxy/praxis?rev=5f520fc2e7ede9b7c62b8a1d83023e59b4eda075#5f520fc2e7ede9b7c62b8a1d83023e59b4eda075"
+source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "bytes",
  "chrono",
@@ -3770,7 +3770,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-filter"
 version = "0.5.5"
-source = "git+https://github.com/praxis-proxy/praxis?rev=5f520fc2e7ede9b7c62b8a1d83023e59b4eda075#5f520fc2e7ede9b7c62b8a1d83023e59b4eda075"
+source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3778,6 +3778,7 @@ dependencies = [
  "dashmap",
  "http 1.5.0",
  "metrics",
+ "parking_lot",
  "percent-encoding",
  "praxis-policy",
  "praxis-proxy-core",
@@ -3799,7 +3800,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-protocol"
 version = "0.5.5"
-source = "git+https://github.com/praxis-proxy/praxis?rev=5f520fc2e7ede9b7c62b8a1d83023e59b4eda075#5f520fc2e7ede9b7c62b8a1d83023e59b4eda075"
+source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3826,7 +3827,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-tls"
 version = "0.5.5"
-source = "git+https://github.com/praxis-proxy/praxis?rev=5f520fc2e7ede9b7c62b8a1d83023e59b4eda075#5f520fc2e7ede9b7c62b8a1d83023e59b4eda075"
+source = "git+https://github.com/mkoushni/praxis?rev=21be73269908b20f2b491c7c014bc37b83b24ff3#21be73269908b20f2b491c7c014bc37b83b24ff3"
 dependencies = [
  "arc-swap",
  "notify",
