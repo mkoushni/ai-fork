@@ -33,7 +33,7 @@ pub(crate) struct StreamEventsConfig {
     /// end-of-stream arrive. Before the first chunk, cluster
     /// `read_timeout_ms` applies; `timeout_secs` does not start until
     /// the first SSE chunk. Each later chunk calls
-    /// [`HttpFilterContext::cap_stream_read_timeout`] with leftover
+    /// [`praxis_filter::HttpFilterContext::cap_stream_read_timeout`] with leftover
     /// budget so the streaming executor copies that cap onto the live
     /// body instead of restarting the original per-read timer. A tighter
     /// cluster `read_timeout_ms` is left in place. Default: 300 (5 minutes).
