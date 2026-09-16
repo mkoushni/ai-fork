@@ -128,7 +128,7 @@ pub(super) struct StreamEventsState {
 /// Place it after `load_balancer` so IRR body hooks run with a selected
 /// peer when needed. `timeout_secs` is an absolute deadline from the first
 /// SSE chunk; each chunk recaps that absolute cutoff onto the live body through
-/// [`HttpFilterContext::cap_stream_deadline`].
+/// [`praxis_filter::HttpFilterContext::cap_stream_deadline`].
 ///
 /// # YAML
 ///

@@ -7,7 +7,7 @@ Composes the current IRR execution into one logical Responses stream.
 
 ## Configuration Notes
 
-Must run inside an `iterative_request_router` step. Running it elsewhere is a misconfiguration and fails closed at request time. Place it after `load_balancer` so IRR body hooks run with a selected peer when needed. `timeout_secs` is an absolute deadline from the first SSE chunk; each chunk recaps that absolute cutoff onto the live body through [`HttpFilterContext::cap_stream_deadline`].
+Must run inside an `iterative_request_router` step. Running it elsewhere is a misconfiguration and fails closed at request time. Place it after `load_balancer` so IRR body hooks run with a selected peer when needed. `timeout_secs` is an absolute deadline from the first SSE chunk; each chunk recaps that absolute cutoff onto the live body through [`praxis_filter::HttpFilterContext::cap_stream_deadline`].
 
 All fields are optional; omitted values fall back to [`SseParserConfig`] defaults.
 
