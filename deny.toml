@@ -40,4 +40,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     # Temporary: until v0.5.2 is published on crates.io
     "https://github.com/praxis-proxy/praxis",
+    # Temporary: cap_stream_deadline fork until it lands on praxis-proxy/praxis
+    "https://github.com/mkoushni/praxis",
 ]
