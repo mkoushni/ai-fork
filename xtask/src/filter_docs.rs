@@ -520,8 +520,9 @@ fn parse_category_shared_types(category_dir: &Path, anchors: &[FilterAnchor], ou
     let Ok(entries) = fs::read_dir(category_dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
@@ -691,8 +692,9 @@ fn append_direct_support_files(dir: &Path, all_anchors: &[FilterAnchor], out: &m
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
         if path.extension().is_some_and(|e| e == "rs")
             && path.file_name().is_some_and(|n| n != "tests.rs")
             && !all_anchors.iter().any(|anchor| anchor.file == path)
@@ -707,8 +709,9 @@ fn scope_files_recursive(dir: &Path, excluded: &HashSet<&Path>, out: &mut Vec<Pa
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
         if path.is_dir() {
             if !excluded.contains(path.as_path()) {
                 scope_files_recursive(&path, excluded, out);
@@ -732,8 +735,9 @@ fn collect_rs_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
         if path.is_dir() {
             collect_rs_files_recursive(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "tests.rs") {
