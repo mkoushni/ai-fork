@@ -3,15 +3,17 @@
 
 //! Deserialized YAML configuration types for the AI guardrails filter.
 
+use praxis_core::config::ChainRef;
 use serde::Deserialize;
 
 /// Deserialized YAML config for the `ai_guardrails` filter.
 ///
 /// ```yaml
 /// filter: ai_guardrails
+/// outbound_chain: nemo-outbound
 /// provider:
 ///   type: nemo
-///   endpoint: "http://nemo:8000/v1/checks"
+///   endpoint: "http://nemo:8000/v1/guardrail/checks"
 ///   timeout_ms: 5000
 /// phase:
 ///   request: true
@@ -19,7 +21,10 @@ use serde::Deserialize;
 /// ```
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct AiGuardrailsConfig {
+pub(crate) struct AiGuardrailsConfig {
+    /// Outbound filter chain executed for every `NeMo` callout.
+    pub outbound_chain: ChainRef,
+
     /// External provider configuration (required).
     pub provider: ProviderConfig,
 
@@ -31,8 +36,8 @@ pub(super) struct AiGuardrailsConfig {
 /// Supported external guardrail provider types.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum ProviderType {
-    /// NVIDIA `NeMo` Guardrails via `/v1/checks`.
+pub(crate) enum ProviderType {
+    /// NVIDIA `NeMo` Guardrails via `/v1/guardrail/checks`.
     Nemo,
 }
 
@@ -42,7 +47,7 @@ pub(super) enum ProviderType {
 /// captured via `#[serde(flatten)]` and passed to the provider's
 /// own `from_config` for parsing and validation.
 #[derive(Debug, Deserialize)]
-pub(super) struct ProviderConfig {
+pub(crate) struct ProviderConfig {
     /// Provider type selector.
     #[serde(rename = "type")]
     pub provider_type: ProviderType,
@@ -55,7 +60,7 @@ pub(super) struct ProviderConfig {
 /// Controls which phases (request/response) the filter evaluates.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct PhaseConfig {
+pub(crate) struct PhaseConfig {
     /// Evaluate client requests before forwarding to the upstream.
     #[serde(default = "default_true")]
     pub request: bool,

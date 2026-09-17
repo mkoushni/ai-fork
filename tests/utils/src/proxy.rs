@@ -78,6 +78,7 @@ fn resolve_listener_pipeline(
             config.insecure_options.allow_unbounded_body,
         )
         .unwrap();
+    pipeline.set_allow_private_upstreams(config.insecure_options.allow_private_upstreams);
     pipeline.set_subrequest_client(client.clone());
     pipeline.add_pipeline_extension(Box::new(praxis_ai_apis::store::ResponseStoreRegistry::new()));
     pipeline.set_allow_private_upstreams(config.insecure_options.allow_private_upstreams);

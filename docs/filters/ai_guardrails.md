@@ -7,12 +7,15 @@ Calls an external AI guardrail provider to evaluate request and response bodies.
 
 ## Configuration Notes
 
-**Wire format:** Chat Completions only (`messages` on requests, `choices[].message` on responses). Responses API, Anthropic Messages, and MCP are not supported yet (see ai#1043).
+Every provider callout runs through the configured `outbound_chain` using Praxis's filtered-subrequest executor. The outbound chain is the trust boundary for authentication, authorization, audit, and static service credentials. Parent and child contexts stay isolated; user-scoped credential projection is handled separately in #880.
+
+Because this filter reads the request body before the header-phase security filters on the main chain run, operators should treat the pre-read body as untrusted input and rely on the outbound chain for destination-bound policy enforcement.
 
 ## Configuration
 
 | Field | Type | Required | Description |
 |-------|------|---------|-------------|
+| `outbound_chain` | ChainRef | yes | Outbound filter chain executed for every NeMo callout. |
 | `provider` | ProviderConfig | yes | External provider configuration (required). |
 | `provider.type` | `nemo` | yes | Provider type selector. |
 | `phase` | PhaseConfig | no | Which phases to evaluate. |
@@ -23,10 +26,10 @@ Calls an external AI guardrail provider to evaluate request and response bodies.
 
 ```yaml
 filter: ai_guardrails
+outbound_chain: nemo-outbound
 provider:
   type: nemo
-  endpoint: "http://nemo:8000/v1/checks"
-  allow_private_endpoint: true
+  endpoint: "http://nemo:8000/v1/guardrail/checks"
   timeout_ms: 5000
 phase:
   request: true
