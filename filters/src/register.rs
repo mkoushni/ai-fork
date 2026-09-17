@@ -348,26 +348,32 @@ fn register_openai_agentic_filters(registry: &mut FilterRegistry) {
 // Sub-request-aware registration
 // -----------------------------------------------------------------------------
 
-/// Register `ai_guardrails` with the shared client when
-/// available, otherwise fall back to an isolated per-filter connector.
+/// Register `ai_guardrails` as a chain-binding filter that resolves its
+/// outbound chain at construction time.
 #[expect(clippy::panic, reason = "matches register_filters! macro convention")]
 fn register_ai_guardrails(registry: &mut FilterRegistry, subrequest_client: Option<&SubRequestClient>) {
-    if let Some(client) = subrequest_client {
-        let client = client.clone();
-        registry
-            .register(
-                "ai_guardrails",
-                praxis_filter::FilterFactory::Http(std::sync::Arc::new(move |config| {
-                    AiGuardrailsFilter::from_config_with_client(config, client.clone())
-                })),
-            )
-            .unwrap_or_else(|_| panic!("duplicate filter name: 'ai_guardrails'"));
-    } else {
-        praxis_filter::register_filters!(
-            @register registry,
-            http "ai_guardrails" => AiGuardrailsFilter::from_config
-        );
-    }
+    let isolated_client = SubRequestClient::new(praxis_core::subrequest::SubRequestConnector::new(4, None));
+    let shared_client = subrequest_client.cloned();
+
+    registry
+        .register_chain_binding(
+            "ai_guardrails",
+            std::sync::Arc::new(move |config: &serde_yaml::Value, ctx: &praxis_filter::ChainBindingContext<'_>| {
+                let chain_ref: praxis_core::config::ChainRef = serde_yaml::from_value(
+                    config
+                        .get("outbound_chain")
+                        .cloned()
+                        .ok_or_else(|| praxis_filter::FilterError::from("ai_guardrails: missing outbound_chain"))?,
+                )
+                .map_err(|error| praxis_filter::FilterError::from(format!("ai_guardrails: bad outbound_chain: {error}")))?;
+                let outbound = std::sync::Arc::new(ctx.bind_chain(&chain_ref)?);
+                let cfg: crate::guardrails::config::AiGuardrailsConfig =
+                    praxis_filter::parse_filter_config("ai_guardrails", config)?;
+                let client = shared_client.clone().unwrap_or_else(|| isolated_client.clone());
+                AiGuardrailsFilter::build(cfg, outbound, client)
+            }),
+        )
+        .unwrap_or_else(|_| panic!("duplicate filter name: 'ai_guardrails'"));
 }
 
 /// Register `anthropic_web_search` with the shared client when
@@ -536,13 +542,8 @@ provider:
             )
             .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
         ];
-        let chains = std::collections::HashMap::new();
-        let result = praxis_filter::FilterPipeline::build_with_chains(
-            &mut entries,
-            &registry,
-            &chains,
-            &praxis_core::config::InsecureOptions::default(),
-        );
+        let chains = HashMap::new();
+        let result = FilterPipeline::build_with_chains(&mut entries, &registry, &chains, &InsecureOptions::default());
         assert!(
             result.is_err(),
             "production registry must reject a missing outbound_chain"
@@ -565,13 +566,8 @@ provider:
             )
             .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
         ];
-        let chains = std::collections::HashMap::new();
-        let result = praxis_filter::FilterPipeline::build_with_chains(
-            &mut entries,
-            &registry,
-            &chains,
-            &praxis_core::config::InsecureOptions::default(),
-        );
+        let chains = HashMap::new();
+        let result = FilterPipeline::build_with_chains(&mut entries, &registry, &chains, &InsecureOptions::default());
         assert!(
             result.is_err(),
             "production registry must reject an unbuildable outbound_chain"
