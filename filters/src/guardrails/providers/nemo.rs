@@ -124,16 +124,11 @@ impl NemoProvider {
             timeout: Duration::from_millis(cfg.timeout_ms),
         })
     }
-}
 
-/// Read the configured callout timeout from provider settings.
-pub(in crate::guardrails) fn callout_timeout_from_config(config: &serde_yaml::Value) -> Result<Duration, FilterError> {
-    let cfg: NemoConfig = serde_yaml::from_value(config.clone())
-        .map_err(|e| -> FilterError { format!("ai_guardrails (nemo): {e}").into() })?;
-    if cfg.timeout_ms == 0 {
-        return Err("ai_guardrails (nemo): 'timeout_ms' must be greater than zero".into());
+    /// Return the validated timeout used for each provider callout.
+    pub(in crate::guardrails) fn callout_timeout(&self) -> Duration {
+        self.timeout
     }
-    Ok(Duration::from_millis(cfg.timeout_ms))
 }
 
 #[async_trait]

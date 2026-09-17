@@ -3,7 +3,10 @@
 
 //! [`AiGuardrailsFilter`] implementation and `HttpFilter` trait impl.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -68,7 +71,7 @@ pub struct AiGuardrailsFilter {
     /// Prebuilt outbound filter chain for provider callouts.
     outbound: Arc<FilterPipeline>,
     /// Per-callout deadline derived from the provider configuration.
-    callout_timeout: std::time::Duration,
+    callout_timeout: Duration,
 }
 
 impl AiGuardrailsFilter {
@@ -86,10 +89,13 @@ impl AiGuardrailsFilter {
         // The registry resolves this reference before calling `build`; retaining
         // it in the parsed config keeps unknown-field validation centralized.
         let _ = &config.outbound_chain;
-        let provider: Box<dyn GuardProvider> = match config.provider.provider_type {
-            ProviderType::Nemo => Box::new(nemo::NemoProvider::from_config(&config.provider.config, client)?),
+        let (provider, callout_timeout): (Box<dyn GuardProvider>, Duration) = match config.provider.provider_type {
+            ProviderType::Nemo => {
+                let provider = nemo::NemoProvider::from_config(&config.provider.config, client)?;
+                let timeout = provider.callout_timeout();
+                (Box::new(provider), timeout)
+            },
         };
-        let callout_timeout = nemo::callout_timeout_from_config(&config.provider.config)?;
 
         Ok(Box::new(Self {
             provider,
@@ -303,17 +309,7 @@ impl HttpFilter for AiGuardrailsFilter {
 
         match evaluation {
             Ok(Ok(result)) => record_verdict(ctx, body, result, GuardPhase::Response),
-            Ok(Err(e)) => {
-                tracing::error!(error = %e, "ai_guardrails: response-phase evaluation failed");
-                replace_body_with_error(
-                    body,
-                    &format!("Guardrail evaluation failed: {e}"),
-                    "guardrail_error",
-                    "evaluation_failed",
-                );
-                Ok(FilterAction::Continue)
-            },
-            Err(e) => {
+            Ok(Err(e)) | Err(e) => {
                 tracing::error!(error = %e, "ai_guardrails: response-phase evaluation failed");
                 replace_body_with_error(
                     body,

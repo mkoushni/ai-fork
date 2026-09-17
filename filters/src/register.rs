@@ -364,16 +364,9 @@ fn register_ai_guardrails(registry: &mut FilterRegistry, subrequest_client: Opti
             "ai_guardrails",
             std::sync::Arc::new(
                 move |config: &serde_yaml::Value, ctx: &praxis_filter::ChainBindingContext<'_>| {
-                    let chain_ref: praxis_core::config::ChainRef =
-                        serde_yaml::from_value(config.get("outbound_chain").cloned().ok_or_else(|| {
-                            praxis_filter::FilterError::from("ai_guardrails: missing outbound_chain")
-                        })?)
-                        .map_err(|error| {
-                            praxis_filter::FilterError::from(format!("ai_guardrails: bad outbound_chain: {error}"))
-                        })?;
-                    let outbound = std::sync::Arc::new(ctx.bind_chain(&chain_ref)?);
                     let cfg: crate::guardrails::config::AiGuardrailsConfig =
                         praxis_filter::parse_filter_config("ai_guardrails", config)?;
+                    let outbound = std::sync::Arc::new(ctx.bind_chain(&cfg.outbound_chain)?);
                     let client = shared_client.clone().unwrap_or_else(|| isolated_client.clone());
                     AiGuardrailsFilter::build(cfg, outbound, client)
                 },
