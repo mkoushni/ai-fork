@@ -422,7 +422,7 @@ fn stream_deadline_at(state: &StreamEventsState) -> Option<Instant> {
 /// Publish the absolute stream cutoff for the streaming executor to copy onto
 /// the live body after this body-filter pass.
 fn recap_stream_deadline(ctx: &mut HttpFilterContext<'_>, deadline: Instant) {
-    ctx.cap_stream_deadline(deadline);
+    ctx.cap_stream_read_timeout(deadline.saturating_duration_since(Instant::now()));
 }
 
 /// Whether an `Io` termination is the stream deadline, not a reset.
