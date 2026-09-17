@@ -9,6 +9,8 @@ use clap::Parser;
 
 /// Conformance areas included in this task.
 mod area;
+/// Chat Completions registry drift check against the pinned specification.
+mod chat_completions_registry;
 /// Operation coverage calculation.
 mod coverage;
 /// Source-derived Conversation item schema artifact.
@@ -23,10 +25,10 @@ mod oasdiff;
 mod print;
 /// Complete reference verification and semantic area projection.
 mod reference;
+/// Shared comparison rules for family registry drift checks.
+mod registry_check;
 /// Responses registry drift check against the pinned specification.
 mod responses_registry;
-/// Chat Completions registry drift check against the pinned specification.
-mod chat_completions_registry;
 /// Semantic YAML tree used for full-spec projection.
 mod semantic_yaml;
 /// `OpenAPI` spec loading and operation extraction.

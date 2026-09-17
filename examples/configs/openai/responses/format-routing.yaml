@@ -24,8 +24,9 @@
 # Non-JSON, invalid JSON, and unrecognized JSON bodies continue by
 # default so mixed-traffic listeners do not reject non-AI requests.
 # Set `on_invalid: reject` for listeners that only accept AI API
-# traffic (rejects anything without `input` or `messages`, except on
-# the authoritative POST /v1/responses create endpoint).
+# traffic (rejects anything without `input`, except on the
+# authoritative POST /v1/responses create endpoint). Chat Completions
+# is identified from the request head and never reaches this filter.
 
 listeners:
   - name: ai-gateway

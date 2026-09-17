@@ -16,7 +16,7 @@ use std::ops::Deref;
 
 use crate::openai::operation::{
     OpenAiApiFamily, OpenAiHandlingMode, OpenAiHttpMethod, OpenAiOperationSpec, OpenAiRequestBody, OpenAiTransport,
-    OperationEntry, RouteParams, match_operation,
+    OperationEntry, match_operation,
 };
 
 /// Static metadata for one Chat Completions operation.
@@ -43,16 +43,12 @@ impl OperationEntry for ChatCompletionsOperationSpec {
 }
 
 /// Convert a registry body declaration into a runtime request-body shape.
-#[expect(unused_macro_rules, reason = "optional form mirrors the shared registry API")]
 macro_rules! request_body_shape {
     ([none]) => {
         OpenAiRequestBody::None
     };
     ([required json]) => {
         OpenAiRequestBody::Json { required: true }
-    };
-    ([optional json]) => {
-        OpenAiRequestBody::Json { required: false }
     };
 }
 
@@ -115,7 +111,7 @@ chat_completions_operations! {
         method: Post,
         transport: Http,
         path: "/chat/completions",
-        mode: Inspect,
+        mode: Passthrough,
         body: [required json],
     },
     GetChatCompletion {
@@ -152,26 +148,11 @@ chat_completions_operations! {
     },
 }
 
-/// Operation IDs Praxis defines itself because the pinned specification does
-/// not represent them as HTTP operations.
-pub const PROTOCOL_EXTENSION_OPERATION_IDS: &[&str] = &[];
-
 /// One matched Chat Completions route.
 #[derive(Clone, Copy)]
-#[allow(dead_code, reason = "completion_id is reserved for downstream Chat Completions filters")]
-pub(crate) struct MatchedChatCompletionsRoute<'a> {
+pub(crate) struct MatchedChatCompletionsRoute {
     /// Matched operation metadata.
     pub spec: &'static ChatCompletionsOperationSpec,
-    /// Borrowed path parameters, captured by the shared matcher.
-    params: RouteParams<'a>,
-}
-
-impl<'a> MatchedChatCompletionsRoute<'a> {
-    /// Return the borrowed completion ID path segment.
-    #[allow(dead_code, reason = "reserved for downstream Chat Completions filters")]
-    pub(crate) fn completion_id(&self) -> Option<&'a str> {
-        self.params.get("completion_id")
-    }
 }
 
 /// Return all Chat Completions operation specs.
@@ -181,11 +162,11 @@ pub const fn operation_specs() -> &'static [ChatCompletionsOperationSpec] {
 }
 
 /// Match a request head to a Chat Completions operation.
-pub(crate) fn match_route<'a>(method: &str, path: &'a str) -> Option<MatchedChatCompletionsRoute<'a>> {
-    match_operation(OPERATION_SPECS, method, path, OpenAiTransport::Http).map(|matched| MatchedChatCompletionsRoute {
-        spec: matched.spec,
-        params: matched.params,
-    })
+///
+/// Chat Completions is reached over plain HTTP only.
+pub(crate) fn match_route(method: &str, path: &str) -> Option<MatchedChatCompletionsRoute> {
+    match_operation(OPERATION_SPECS, method, path, OpenAiTransport::Http)
+        .map(|matched| MatchedChatCompletionsRoute { spec: matched.spec })
 }
 
 #[cfg(test)]
@@ -227,16 +208,28 @@ mod tests {
 
     #[test]
     fn identifier_paths_capture_the_completion_id() {
-        let matched = match_route("GET", "/v1/chat/completions/chatcmpl_abc123").unwrap();
+        let matched = match_operation(
+            OPERATION_SPECS,
+            "GET",
+            "/v1/chat/completions/chatcmpl_abc123",
+            OpenAiTransport::Http,
+        )
+        .unwrap();
         assert_eq!(matched.spec.operation, ChatCompletionsOperation::GetChatCompletion);
-        assert_eq!(matched.completion_id(), Some("chatcmpl_abc123"));
+        assert_eq!(matched.params.get("completion_id"), Some("chatcmpl_abc123"));
 
-        let matched = match_route("GET", "/v1/chat/completions/chatcmpl_abc123/messages").unwrap();
+        let matched = match_operation(
+            OPERATION_SPECS,
+            "GET",
+            "/v1/chat/completions/chatcmpl_abc123/messages",
+            OpenAiTransport::Http,
+        )
+        .unwrap();
         assert_eq!(
             matched.spec.operation,
             ChatCompletionsOperation::GetChatCompletionMessages
         );
-        assert_eq!(matched.completion_id(), Some("chatcmpl_abc123"));
+        assert_eq!(matched.params.get("completion_id"), Some("chatcmpl_abc123"));
     }
 
     #[test]
@@ -246,6 +239,23 @@ mod tests {
 
         let list = match_route("GET", "/v1/chat/completions").unwrap();
         assert_eq!(list.spec.operation, ChatCompletionsOperation::ListChatCompletions);
+    }
+
+    #[test]
+    fn trailing_slash_and_query_string_are_normalized() {
+        for path in [
+            "/v1/chat/completions",
+            "/v1/chat/completions/",
+            "/v1/chat/completions?limit=5",
+            "/v1/chat/completions/?limit=5",
+        ] {
+            let matched = match_route("POST", path).unwrap();
+            assert_eq!(
+                matched.spec.operation,
+                ChatCompletionsOperation::CreateChatCompletion,
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -282,16 +292,12 @@ mod tests {
     }
 
     #[test]
-    fn registry_declares_no_owned_contract() {
+    fn registry_proxies_without_inspecting_or_owning_the_contract() {
         assert!(
-            OPERATION_SPECS.iter().all(|spec| spec.owned_contract().is_none()),
-            "Praxis proxies the Chat Completions contract rather than owning it"
+            OPERATION_SPECS
+                .iter()
+                .all(|spec| spec.mode == OpenAiHandlingMode::Passthrough && spec.owned_contract().is_none()),
+            "Praxis proxies Chat Completions without inspecting or owning the contract"
         );
-    }
-
-    #[test]
-    fn classification_is_independent_of_request_body() {
-        let matched = match_route("POST", "/v1/chat/completions").unwrap();
-        assert_eq!(matched.spec.operation, ChatCompletionsOperation::CreateChatCompletion);
     }
 }

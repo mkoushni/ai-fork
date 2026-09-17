@@ -237,30 +237,13 @@ impl ReferenceDocument {
         let paths = yaml_get(root, "paths")
             .and_then(YamlValue::as_mapping)
             .ok_or_else(|| "upstream OpenAPI document does not contain a paths object".to_owned())?;
-
-        let mut operations = Vec::new();
-        for (path, path_item) in paths.iter() {
-            let Some(path) = path.as_str() else {
-                continue;
-            };
-            if !scope.matches(path) {
-                continue;
-            }
-            let Some(path_item) = path_item.as_mapping() else {
-                continue;
-            };
-            for method in HTTP_METHODS {
-                let Some(operation) = yaml_get(path_item, method).and_then(YamlValue::as_mapping) else {
-                    continue;
-                };
-                operations.push(parse_semantic_operation(path, method, operation, scope.label));
-            }
-        }
-
+        let mut operations = collect_scoped_operations(paths, scope);
         if operations.is_empty() {
-            return Err(format!("upstream OpenAPI did not contain any {} operations", scope.label));
+            return Err(format!(
+                "upstream OpenAPI did not contain any {} operations",
+                scope.label
+            ));
         }
-
         operations.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(operations)
     }
@@ -392,6 +375,29 @@ fn copy_root_field(source: &YamlMapping, target: &mut YamlMapping, name: &str) {
 /// Get a string-keyed value from a YAML mapping.
 fn yaml_get<'a>(mapping: &'a YamlMapping, key: &str) -> Option<&'a YamlValue> {
     mapping.get(&YamlValue::String(key.to_owned()))
+}
+
+/// Collect operations whose paths belong to `scope`.
+fn collect_scoped_operations(paths: &YamlMapping, scope: OperationScope) -> Vec<SpecOperation> {
+    let mut operations = Vec::new();
+    for (path, path_item) in paths.iter() {
+        let Some(path) = path.as_str() else {
+            continue;
+        };
+        if !scope.matches(path) {
+            continue;
+        }
+        let Some(path_item) = path_item.as_mapping() else {
+            continue;
+        };
+        for method in HTTP_METHODS {
+            let Some(operation) = yaml_get(path_item, method).and_then(YamlValue::as_mapping) else {
+                continue;
+            };
+            operations.push(parse_semantic_operation(path, method, operation, scope.label));
+        }
+    }
+    operations
 }
 
 /// Parse one operation object from the semantic YAML tree.

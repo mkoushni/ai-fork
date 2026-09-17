@@ -71,34 +71,46 @@ async fn classifies_a_conversations_operation() {
 }
 
 #[tokio::test]
-async fn classifies_a_chat_completions_operation() {
-    let filter = default_filter();
-    let request = req("POST", "/v1/chat/completions");
-    let mut ctx = make_filter_context(&request);
-    drop(filter.on_request(&mut ctx).await.unwrap());
+async fn classifies_chat_completions_operations_from_the_request_head() {
+    for (method, path, operation_id) in [
+        ("POST", "/v1/chat/completions", "createChatCompletion"),
+        ("POST", "/v1/chat/completions/", "createChatCompletion"),
+        ("POST", "/v1/chat/completions?stream=true", "createChatCompletion"),
+        ("GET", "/v1/chat/completions", "listChatCompletions"),
+        ("GET", "/v1/chat/completions/chatcmpl_abc", "getChatCompletion"),
+        ("POST", "/v1/chat/completions/chatcmpl_abc", "updateChatCompletion"),
+        ("DELETE", "/v1/chat/completions/chatcmpl_abc", "deleteChatCompletion"),
+        (
+            "GET",
+            "/v1/chat/completions/chatcmpl_abc/messages",
+            "getChatCompletionMessages",
+        ),
+    ] {
+        let filter = default_filter();
+        let request = req(method, path);
+        let mut ctx = make_filter_context(&request);
+        drop(filter.on_request(&mut ctx).await.unwrap());
 
-    let matched = ctx.extensions.get::<OpenAiOperationMatch>().copied().unwrap();
-    assert_eq!(matched.family, OpenAiApiFamily::ChatCompletions);
-    assert_eq!(matched.operation_id, "createChatCompletion");
-    assert_eq!(matched.transport, OpenAiTransport::Http);
-
-    assert_eq!(
-        ctx.filter_metadata
-            .get("openai_operation.application_protocol")
-            .map(String::as_str),
-        Some("openai_chat_completions")
-    );
+        let matched = ctx.extensions.get::<OpenAiOperationMatch>().copied();
+        assert!(matched.is_some(), "{method} {path} must classify");
+        let matched = matched.unwrap();
+        assert_eq!(matched.family, OpenAiApiFamily::ChatCompletions, "{method} {path}");
+        assert_eq!(matched.operation_id, operation_id, "{method} {path}");
+        assert_eq!(matched.transport, OpenAiTransport::Http, "{method} {path}");
+    }
 }
 
 #[tokio::test]
-async fn chat_completions_classification_does_not_depend_on_body() {
+async fn websocket_handshake_on_chat_completions_does_not_match() {
     let filter = default_filter();
-    let request = req("POST", "/v1/chat/completions");
+    let mut request = req("GET", "/v1/chat/completions");
+    request.headers = websocket_headers();
     let mut ctx = make_filter_context(&request);
     drop(filter.on_request(&mut ctx).await.unwrap());
-
-    let matched = ctx.extensions.get::<OpenAiOperationMatch>().copied().unwrap();
-    assert_eq!(matched.operation_id, "createChatCompletion");
+    assert!(
+        ctx.extensions.get::<OpenAiOperationMatch>().is_none(),
+        "Chat Completions is HTTP-only, so a websocket handshake must not classify"
+    );
 }
 
 #[tokio::test]
