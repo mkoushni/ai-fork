@@ -15,7 +15,7 @@ Because this filter reads the request body before the header-phase security filt
 
 | Field | Type | Required | Description |
 |-------|------|---------|-------------|
-| `outbound_chain` | ChainRef | yes | Outbound filter chain executed for every NeMo callout. |
+| `outbound_chain` | ChainRef | yes | Outbound filter chain executed for every `NeMo` callout. |
 | `provider` | ProviderConfig | yes | External provider configuration (required). |
 | `provider.type` | `nemo` | yes | Provider type selector. |
 | `phase` | PhaseConfig | no | Which phases to evaluate. |
