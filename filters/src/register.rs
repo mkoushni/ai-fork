@@ -521,6 +521,63 @@ mod tests {
         }
     }
 
+    #[test]
+    #[expect(clippy::panic, reason = "the test fixture is compile-time controlled")]
+    fn ai_guardrails_requires_outbound_chain_in_production_registry() {
+        let registry = build_ai_registry();
+        let mut entries = vec![
+            serde_yaml::from_str(
+                r#"
+filter: ai_guardrails
+provider:
+  type: nemo
+  endpoint: "http://nemo:8000/v1/guardrail/checks"
+"#,
+            )
+            .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
+        ];
+        let chains = std::collections::HashMap::new();
+        let result = praxis_filter::FilterPipeline::build_with_chains(
+            &mut entries,
+            &registry,
+            &chains,
+            &praxis_core::config::InsecureOptions::default(),
+        );
+        assert!(
+            result.is_err(),
+            "production registry must reject a missing outbound_chain"
+        );
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "the test fixture is compile-time controlled")]
+    fn ai_guardrails_rejects_an_unbuildable_outbound_chain() {
+        let registry = build_ai_registry();
+        let mut entries = vec![
+            serde_yaml::from_str(
+                r#"
+filter: ai_guardrails
+outbound_chain: missing-chain
+provider:
+  type: nemo
+  endpoint: "http://nemo:8000/v1/guardrail/checks"
+"#,
+            )
+            .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
+        ];
+        let chains = std::collections::HashMap::new();
+        let result = praxis_filter::FilterPipeline::build_with_chains(
+            &mut entries,
+            &registry,
+            &chains,
+            &praxis_core::config::InsecureOptions::default(),
+        );
+        assert!(
+            result.is_err(),
+            "production registry must reject an unbuildable outbound_chain"
+        );
+    }
+
     /// Assert `name` is registered iff `enabled`.
     fn assert_experimental_registration(names: &[&str], name: &str, enabled: bool) {
         if enabled {

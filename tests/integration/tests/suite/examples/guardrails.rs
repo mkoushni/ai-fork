@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 
 use praxis_test_utils::{
-    Backend, BackendGuard, free_port, http_post, start_backend_with_shutdown, start_proxy, start_stateful_backend,
+    Backend, BackendGuard, free_port, http_post, http_send, json_post, start_backend_with_shutdown, start_proxy,
+    start_stateful_backend,
 };
 
 use super::load_example_config;
@@ -60,11 +61,16 @@ fn nemo_guardrails_callout_runs_outbound_chain() {
     );
     let proxy = start_proxy(&config);
 
-    let (status, _) = http_post(
-        proxy.addr(),
+    let mut request = json_post(
         "/v1/chat/completions",
         r#"{"model":"test","messages":[{"role":"user","content":"Hello"}]}"#,
     );
+    request = request.replace(
+        "Connection: close",
+        "Authorization: Bearer client-secret\r\nX-Client-Secret: should-not-forward\r\nConnection: close",
+    );
+    let raw = http_send(proxy.addr(), &request);
+    let status = praxis_test_utils::parse_status(&raw);
 
     assert_eq!(status, 200, "successful filtered callout should reach the upstream");
     let requests = nemo.requests();
@@ -75,6 +81,41 @@ fn nemo_guardrails_callout_runs_outbound_chain() {
             .any(|line| line.to_ascii_lowercase().starts_with("x-request-id: ")),
         "outbound chain should run request_id for the callout; request: {}",
         requests[0]
+    );
+    assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+    assert!(!requests[0].to_ascii_lowercase().contains("x-client-secret:"));
+}
+
+#[test]
+fn nemo_guardrails_response_phase_runs_outbound_chain() {
+    let backend = Backend::fixed(
+        r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"safe"}}]}"#,
+    )
+    .start_with_shutdown();
+    let nemo = start_stateful_backend(vec![(200, r#"{"status":"success","rails_status":{}}"#.to_owned())]);
+    let proxy_port = free_port();
+    let config = load_example_config(
+        "nemo-guardrails-response.yaml",
+        proxy_port,
+        HashMap::from([("127.0.0.1:3000", backend.port()), ("127.0.0.1:3001", nemo.port())]),
+    );
+    let proxy = start_proxy(&config);
+
+    let (status, _) = http_post(
+        proxy.addr(),
+        "/v1/chat/completions",
+        r#"{"model":"test","messages":[{"role":"user","content":"Hello"}]}"#,
+    );
+    assert_eq!(
+        status, 200,
+        "response-phase guardrails should preserve a successful response"
+    );
+    let requests = nemo.requests();
+    assert!(!requests.is_empty(), "response phase should issue a NeMo callout");
+    assert!(
+        requests[0]
+            .lines()
+            .any(|line| line.to_ascii_lowercase().starts_with("x-request-id: "))
     );
 }
 
@@ -157,6 +198,30 @@ fn nemo_guardrails_provider_down_does_not_forward() {
         status, 500,
         "provider down should abort the pipeline with a 500, not forward to upstream"
     );
+}
+
+#[test]
+fn nemo_guardrails_oversized_provider_response_fails_closed() {
+    let backend = start_backend_with_shutdown("ok");
+    let oversized = format!(
+        "{{\"status\":\"success\",\"padding\":\"{}\"}}",
+        "x".repeat(2 * 1024 * 1024)
+    );
+    let nemo = start_stateful_backend(vec![(200, oversized)]);
+    let proxy_port = free_port();
+    let config = load_example_config(
+        "nemo-guardrails.yaml",
+        proxy_port,
+        HashMap::from([("127.0.0.1:3000", backend.port()), ("127.0.0.1:3001", nemo.port())]),
+    );
+    let proxy = start_proxy(&config);
+
+    let (status, _) = http_post(
+        proxy.addr(),
+        "/v1/guardrail/checks",
+        r#"{"model":"test","messages":[{"role":"user","content":"hello"}]}"#,
+    );
+    assert_eq!(status, 500, "oversized NeMo responses must fail closed");
 }
 
 #[test]

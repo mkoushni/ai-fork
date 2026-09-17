@@ -7,18 +7,18 @@ use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+#[cfg(test)]
+use praxis_core::subrequest::SubRequestConnector;
 use praxis_core::{
     config::InsecureOptions,
     subrequest::{DEPTH_HEADER, SubRequestClient},
 };
 #[cfg(test)]
-use praxis_core::subrequest::SubRequestConnector;
+use praxis_filter::parse_filter_config;
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, FilterPipeline, HttpFilter, HttpFilterContext, Rejection,
     SubrequestRuntime,
 };
-#[cfg(test)]
-use praxis_filter::parse_filter_config;
 
 use super::{
     config::{AiGuardrailsConfig, PhaseConfig, ProviderType},
