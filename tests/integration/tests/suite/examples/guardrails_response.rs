@@ -76,7 +76,7 @@ fn response_guardrails_config_parses_correctly() {
 #[test]
 fn response_guardrails_pass_forwards_upstream_body() {
     let backend = chat_backend("Hello! I'm doing well.");
-    let nemo = nemo_mock(r#"{"status":"passed","content":"Hello! I'm doing well."}"#);
+    let nemo = nemo_mock(r#"{"status":"success","rails_status":{}}"#);
     let proxy_port = free_port();
     let config = load_response_config(proxy_port, backend.port(), nemo.port());
     let proxy = start_proxy(&config);
@@ -106,7 +106,7 @@ fn response_guardrails_pass_forwards_upstream_body() {
 #[test]
 fn response_guardrails_block_replaces_body() {
     let backend = chat_backend("toxic content that should be blocked");
-    let nemo = nemo_mock(r#"{"status":"blocked","content":"blocked","rail":"toxicity"}"#);
+    let nemo = nemo_mock(r#"{"status":"blocked","rails_status":{"toxicity":{"status":"blocked"}}}"#);
     let proxy_port = free_port();
     let config = load_response_config(proxy_port, backend.port(), nemo.port());
     let proxy = start_proxy(&config);
@@ -193,7 +193,7 @@ fn response_guardrails_provider_down_replaces_body() {
 fn response_guardrails_non_chat_body_replaces_body() {
     let long_text = "x".repeat(512);
     let backend = start_backend_with_shutdown(&long_text);
-    let nemo = nemo_mock(r#"{"status":"passed","content":"ok"}"#);
+    let nemo = nemo_mock(r#"{"status":"success","rails_status":{}}"#);
     let proxy_port = free_port();
     let config = load_response_config(proxy_port, backend.port(), nemo.port());
     let proxy = start_proxy(&config);
