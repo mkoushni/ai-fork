@@ -101,10 +101,6 @@ for handling `praxis-bot` automated review comments.
 - PRs are merged with **squash and merge**, so the
   final commit on the target branch is always clean
   regardless of intermediate fixup commits.
-- Every commit pushed to a PR must include a DCO sign-off
-  trailer (`Signed-off-by: Full Name <email>`). Use
-  `git commit -s` for new commits and verify the complete
-  PR range before pushing.
 
 ## Test Requirements
 
