@@ -292,13 +292,14 @@ fn round_trip_captures_tool_and_model_requests() {
     });
 
     let proxy_port = free_port();
-    let config = load_loopback_mcp_forward_headers_config(proxy_port, model.port());
+    let config = load_loopback_mcp_config_without_rehydrate(proxy_port, model.port());
     let proxy = start_proxy(&config);
 
     let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp.port());
     let request_body = serde_json::json!({
         "model": "gpt-4.1",
         "input": "What is the weather in SF?",
+        "conversation": {"id": "conv_native"},
         "parallel_tool_calls": true,
         "tools": [{
             "type": "mcp",
@@ -373,15 +374,19 @@ fn round_trip_captures_tool_and_model_requests() {
 
     let model_body: serde_json::Value =
         serde_json::from_str(&second_model_req.body).expect("second model request body should be valid JSON");
+    assert_eq!(
+        model_body["conversation"]["id"], "conv_native",
+        "state-backed rebuild must preserve a provider-owned conversation"
+    );
     let input = model_body["input"]
         .as_array()
         .expect("second model request input should be an array");
 
-    let has_function_call = input.iter().any(|item| item["type"] == "function_call");
     let has_function_call_output = input.iter().any(|item| item["type"] == "function_call_output");
-    assert!(
-        has_function_call,
-        "second model request input should contain a function_call item"
+    assert_eq!(
+        input.len(),
+        1,
+        "provider-owned continuation should send only the new delta"
     );
     assert!(
         has_function_call_output,
@@ -1013,13 +1018,13 @@ fn streaming_mcp_round_trip_uses_one_logical_sse_response() {
         ..McpMockConfig::default()
     });
     let proxy_port = free_port();
-    let config = load_loopback_mcp_config(proxy_port, model_port);
+    let config = load_loopback_mcp_config_without_rehydrate(proxy_port, model_port);
     let proxy = start_proxy(&config);
     let request = serde_json::json!({
         "model": "gpt-4.1",
         "input": "What is the weather in SF?",
         "stream": true,
-        "store": false,
+        "conversation": {"id": "conv_native"},
         "tools": [{
             "type": "mcp",
             "server_label": "weather",
@@ -1318,13 +1323,14 @@ fn streaming_mcp_round_trip_uses_one_logical_sse_response() {
     let input = second_request["input"]
         .as_array()
         .expect("second request input should be an array");
-    assert!(
-        input.iter().any(|item| item["type"] == "function_call"),
-        "second inference should receive the streamed function call"
+    assert_eq!(
+        input.len(),
+        1,
+        "provider-owned continuation should send only the new delta"
     );
-    assert!(
-        input.iter().any(|item| item["type"] == "function_call_output"),
-        "second inference should receive the MCP result"
+    assert_eq!(
+        input[0]["type"], "function_call_output",
+        "the only continuation item should be the local tool result"
     );
 
     // #985 (criterion 3): the call identity stays consistent across every round of
@@ -5411,11 +5417,16 @@ fn load_unified_dispatch_config(
             "api_key: test-key\n                base_url: http://127.0.0.1:{search_port}\n                allow_private_base_url: true"
         ),
     );
+    let yaml = yaml.replacen(
+        "      - filter: state_owner\n        mode: single_tenant\n        tenant_id: default\n",
+        "      - filter: state_owner\n        mode: trusted_headers\n        tenant: {header: x-tenant-id}\n        issuer: {static: urn:test}\n        subject: {static: test-user}\n      - filter: state_owner_headers\n        tenant_header: x-tenant-id\n        subject_header: x-user-id\n",
+        1,
+    );
     // Allow loopback MCP resolution and dispatch against the in-test MCP server.
     let yaml = yaml.replacen(
         "      - filter: openai_mcp_tool_resolve\n        connectors:\n          - id: corp_drive\n            server_url: https://drive-mcp.internal:8443/mcp\n",
         &format!(
-            "      - filter: state_owner\n        mode: trusted_headers\n        tenant: {{header: x-tenant-id}}\n        issuer: {{static: urn:test}}\n        subject: {{static: test-user}}\n      - filter: state_owner_headers\n        tenant_header: x-tenant-id\n        subject_header: x-user-id\n      - filter: openai_mcp_tool_resolve\n        allow_loopback: true\n        forward_headers: [x-tenant-id]\n        connectors:\n          - id: trusted-mcp\n            server_url: http://127.0.0.1:{mcp_port}/mcp\n"
+            "      - filter: openai_mcp_tool_resolve\n        allow_loopback: true\n        forward_headers: [x-tenant-id]\n        connectors:\n          - id: trusted-mcp\n            server_url: http://127.0.0.1:{mcp_port}/mcp\n"
         ),
         1,
     );
@@ -6795,10 +6806,6 @@ fn load_loopback_mcp_config(proxy_port: u16, model_port: u16) -> praxis_core::co
     load_loopback_mcp_config_inner(proxy_port, model_port, false)
 }
 
-fn load_loopback_mcp_forward_headers_config(proxy_port: u16, model_port: u16) -> praxis_core::config::Config {
-    load_loopback_mcp_config_inner(proxy_port, model_port, true)
-}
-
 fn load_loopback_mcp_config_inner(
     proxy_port: u16,
     model_port: u16,
@@ -6872,6 +6879,29 @@ fn load_loopback_mcp_config_with_connectors(
         1,
     );
     praxis_core::config::Config::from_yaml(&yaml).expect("parse loopback MCP connector config")
+}
+
+fn load_loopback_mcp_config_without_rehydrate(proxy_port: u16, model_port: u16) -> praxis_core::config::Config {
+    let path = example_config_path("openai/responses/agentic-loop.yaml");
+    let yaml = std::fs::read_to_string(path).expect("read agentic-loop example");
+    let yaml = patch_yaml(&yaml, proxy_port, &HashMap::from([("127.0.0.1:3001", model_port)]));
+    let yaml = patch_web_search_api_key(&yaml);
+    let yaml = yaml.replacen("      - filter: openai_responses_rehydrate\n", "", 1);
+    assert!(
+        !yaml.contains("      - filter: openai_responses_rehydrate\n"),
+        "expected to remove rehydration from the agentic-loop config"
+    );
+    let yaml = yaml.replacen(
+        "      - filter: openai_mcp_tool_resolve\n",
+        "      - filter: openai_mcp_tool_resolve\n        allow_loopback: true\n",
+        1,
+    );
+    let yaml = yaml.replacen(
+        "              - filter: openai_mcp_dispatch\n",
+        "              - filter: openai_mcp_dispatch\n                allow_loopback: true\n",
+        1,
+    );
+    praxis_core::config::Config::from_yaml(&yaml).expect("parse loopback MCP config without rehydration")
 }
 
 /// Loopback MCP config backed by a real (file) SQLite store so the approval

@@ -12,7 +12,7 @@
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used, reason = "tests")]
 mod tests;
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -39,20 +39,19 @@ const SINGLE_TENANT_ISSUER: &str = "urn:praxis:single-tenant";
 /// Stable subject used by the explicit shared-owner compatibility mode.
 const SINGLE_TENANT_SUBJECT: &str = "shared";
 
-/// Immutable normalized owner identity.
+/// Immutable tenant-qualified owner of persisted private state.
 ///
-/// Tenant, issuer, and subject together form the ownership identity. A subject
-/// alone is not globally unique and must never be used as an owner scope.
-/// Installing this context does not by itself authorize access or change store
-/// predicates; persistence filters must explicitly consume it.
+/// Tenant, issuer, and subject together form the ownership identity. The
+/// reference-counted components make passing the owner through records and
+/// request-scoped store handles cheap without copying identity strings.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StateOwner {
     /// Stable tenant namespace.
-    tenant_id: String,
+    tenant_id: Arc<str>,
     /// Stable identity-provider or trust-domain identifier.
-    issuer: String,
-    /// Stable subject identifier within `issuer`.
-    subject: String,
+    issuer: Arc<str>,
+    /// Stable principal identifier within the issuer.
+    subject: Arc<str>,
 }
 
 /// Ingress-only headers consumed while normalizing [`StateOwner`].
@@ -64,40 +63,69 @@ pub struct StateOwner {
 pub(crate) struct StateOwnerIngressHeaders(pub(crate) Arc<[HeaderName]>);
 
 impl StateOwner {
+    /// Construct an owner from trusted, normalized identity parts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateOwnerError`] when a component is empty, oversized, or
+    /// contains a control character.
+    pub fn from_trusted_parts(
+        tenant_id: impl Into<Arc<str>>,
+        issuer: impl Into<Arc<str>>,
+        subject: impl Into<Arc<str>>,
+    ) -> Result<Self, StateOwnerError> {
+        let owner = Self {
+            tenant_id: tenant_id.into(),
+            issuer: issuer.into(),
+            subject: subject.into(),
+        };
+        validate_component("tenant", &owner.tenant_id)?;
+        validate_component("issuer", &owner.issuer)?;
+        validate_component("subject", &owner.subject)?;
+        Ok(owner)
+    }
+
     /// Stable tenant namespace.
+    #[must_use]
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
     }
 
     /// Stable identity-provider or trust-domain identifier.
+    #[must_use]
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
 
     /// Stable subject identifier within [`Self::issuer`].
+    #[must_use]
     pub fn subject(&self) -> &str {
         &self.subject
     }
+}
 
-    /// Construct an owner from trusted, normalized identity parts.
-    ///
-    /// This is crate-visible so a future native Core identity adapter can
-    /// populate the same context without serializing identity through a header.
-    pub(crate) fn from_trusted_parts(
-        tenant_id: String,
-        issuer: String,
-        subject: String,
-    ) -> Result<Self, OwnerAssertionError> {
-        validate_component("tenant", &tenant_id)?;
-        validate_component("issuer", &issuer)?;
-        validate_component("subject", &subject)?;
-        Ok(Self {
-            tenant_id,
-            issuer,
-            subject,
-        })
+/// Invalid stable owner component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StateOwnerError {
+    /// Stable name of the component that failed validation.
+    component: &'static str,
+}
+
+impl StateOwnerError {
+    /// Stable name of the invalid component.
+    #[must_use]
+    pub fn component(self) -> &'static str {
+        self.component
     }
 }
+
+impl fmt::Display for StateOwnerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid state owner {}", self.component)
+    }
+}
+
+impl std::error::Error for StateOwnerError {}
 
 /// Explicitly copy the normalized owner into an isolated subrequest context.
 ///
@@ -117,6 +145,17 @@ pub fn project_state_owner(parent: &RequestExtensions, child: &mut RequestExtens
     // is the ownership boundary; no request or header collection is cloned.
     child.insert(owner.clone());
     true
+}
+
+/// Borrow the trusted owner installed for this request.
+///
+/// Request-driven persisted-state filters fail closed when the security filter
+/// is absent or incorrectly ordered.
+pub(crate) fn require_state_owner<'a>(ctx: &'a HttpFilterContext<'_>) -> Result<&'a StateOwner, FilterAction> {
+    ctx.extensions.get::<StateOwner>().ok_or_else(|| {
+        log_owner_decision("deny", "request_context", "missing_owner");
+        reject_owner(401, "missing_state_owner", "trusted state owner assertion is required")
+    })
 }
 
 /// Configuration for [`StateOwnerFilter`].
@@ -210,8 +249,10 @@ impl OwnerComponentSource {
                 Ok(Self::Header(parse_header_name(&field, &config.header)?))
             },
             OwnerComponentConfig::Static(config) => {
-                validate_component(component, &config.value)
-                    .map_err(|error| format!("state_owner: {}", error.client_message()))?;
+                validate_component(component, &config.value).map_err(|error| {
+                    let error = OwnerAssertionError::InvalidComponent(error.component());
+                    format!("state_owner: {}", error.client_message())
+                })?;
                 Ok(Self::Static(config.value))
             },
         }
@@ -330,10 +371,10 @@ impl StateOwnerFilter {
             return FilterAction::Continue;
         }
 
-        let owner = match &self.source {
-            OwnerSource::Static(owner) => owner.clone(),
+        let (owner, source) = match &self.source {
+            OwnerSource::Static(owner) => (owner.clone(), "single_tenant"),
             OwnerSource::TrustedHeader(header) => match resolve_trusted_header(ctx, header, body_phase) {
-                Ok(owner) => owner,
+                Ok(owner) => (owner, "trusted_header"),
                 Err(action) => return action,
             },
             OwnerSource::TrustedComponents {
@@ -341,7 +382,7 @@ impl StateOwnerFilter {
                 issuer,
                 subject,
             } => match resolve_trusted_components(ctx, tenant, issuer, subject, body_phase) {
-                Ok(owner) => owner,
+                Ok(owner) => (owner, "trusted_headers"),
                 Err(action) => return action,
             },
         };
@@ -349,6 +390,7 @@ impl StateOwnerFilter {
         ctx.extensions
             .insert(StateOwnerIngressHeaders(Arc::clone(&self.ingress_headers)));
         self.queue_header_removal(ctx, body_phase);
+        log_owner_decision("allow", source, "valid");
         FilterAction::Continue
     }
 
@@ -394,7 +436,7 @@ fn single_tenant_source(tenant_id: String) -> Result<OwnerSource, FilterError> {
         SINGLE_TENANT_ISSUER.to_owned(),
         SINGLE_TENANT_SUBJECT.to_owned(),
     )
-    .map_err(|error| format!("state_owner: {}", error.client_message()))?;
+    .map_err(|error| format!("state_owner: invalid single-tenant {}", error.component()))?;
     Ok(OwnerSource::Static(owner))
 }
 
@@ -423,6 +465,7 @@ fn resolve_trusted_header(
 ) -> Result<StateOwner, FilterAction> {
     let value = exactly_one_header_value(ctx, header, body_phase)?;
     if value.as_bytes().len() > MAX_ASSERTION_BYTES {
+        log_owner_decision("deny", "trusted_header", "oversized");
         return Err(reject_owner(
             400,
             "invalid_state_owner",
@@ -430,6 +473,7 @@ fn resolve_trusted_header(
         ));
     }
     let Ok(value) = value.to_str() else {
+        log_owner_decision("deny", "trusted_header", "non_text");
         return Err(reject_owner(
             400,
             "invalid_state_owner",
@@ -439,7 +483,7 @@ fn resolve_trusted_header(
     match decode_assertion(value) {
         Ok(owner) => Ok(owner),
         Err(error) => {
-            tracing::debug!(reason = error.category(), "rejected trusted state owner assertion");
+            log_owner_decision("deny", "trusted_header", error.category());
             Err(reject_owner(400, "invalid_state_owner", error.client_message()))
         },
     }
@@ -459,8 +503,11 @@ fn resolve_trusted_components(
     let tenant_id = resolve_owner_component(ctx, "tenant", tenant, body_phase)?;
     let issuer = resolve_owner_component(ctx, "issuer", issuer, body_phase)?;
     let subject = resolve_owner_component(ctx, "subject", subject, body_phase)?;
-    StateOwner::from_trusted_parts(tenant_id, issuer, subject)
-        .map_err(|error| reject_owner(400, "invalid_state_owner", error.client_message()))
+    StateOwner::from_trusted_parts(tenant_id, issuer, subject).map_err(|error| {
+        log_owner_decision("deny", "trusted_headers", "invalid_component");
+        let error = OwnerAssertionError::InvalidComponent(error.component());
+        reject_owner(400, "invalid_state_owner", error.client_message())
+    })
 }
 
 /// Resolve and validate one mapped owner component.
@@ -477,14 +524,18 @@ fn resolve_owner_component(
 
     let value = exactly_one_component_header_value(ctx, component, header, body_phase)?;
     let Ok(value) = value.to_str() else {
+        log_owner_decision("deny", "trusted_headers", "non_text");
         return Err(reject_owner(
             400,
             "invalid_state_owner",
             &format!("trusted state owner {component} header must be text"),
         ));
     };
-    validate_component(component, value)
-        .map_err(|error| reject_owner(400, "invalid_state_owner", error.client_message()))?;
+    validate_component(component, value).map_err(|error| {
+        log_owner_decision("deny", "trusted_headers", "invalid_component");
+        let error = OwnerAssertionError::InvalidComponent(error.component());
+        reject_owner(400, "invalid_state_owner", error.client_message())
+    })?;
     Ok(value.to_owned())
 }
 
@@ -497,6 +548,7 @@ fn exactly_one_component_header_value(
 ) -> Result<http::HeaderValue, FilterAction> {
     let mut values = effective_owner_header_values(ctx, header, body_phase).into_iter();
     let Some(value) = values.next() else {
+        log_owner_decision("deny", "trusted_headers", "missing");
         return Err(reject_owner(
             401,
             "missing_state_owner",
@@ -504,6 +556,7 @@ fn exactly_one_component_header_value(
         ));
     };
     if values.next().is_some() {
+        log_owner_decision("deny", "trusted_headers", "duplicate");
         return Err(reject_owner(
             400,
             "invalid_state_owner",
@@ -521,6 +574,7 @@ fn exactly_one_header_value(
 ) -> Result<http::HeaderValue, FilterAction> {
     let mut values = effective_owner_header_values(ctx, header, body_phase).into_iter();
     let Some(value) = values.next() else {
+        log_owner_decision("deny", "trusted_header", "missing");
         return Err(reject_owner(
             401,
             "missing_state_owner",
@@ -528,6 +582,7 @@ fn exactly_one_header_value(
         ));
     };
     if values.next().is_some() {
+        log_owner_decision("deny", "trusted_header", "duplicate");
         return Err(reject_owner(
             400,
             "invalid_state_owner",
@@ -711,12 +766,13 @@ fn decode_assertion(value: &str) -> Result<StateOwner, OwnerAssertionError> {
     let [tenant_id, issuer, subject]: [String; 3] =
         serde_json::from_slice(&decoded).map_err(|_error| OwnerAssertionError::InvalidPayload)?;
     StateOwner::from_trusted_parts(tenant_id, issuer, subject)
+        .map_err(|error| OwnerAssertionError::InvalidComponent(error.component()))
 }
 
-/// Validate one stable owner component.
-fn validate_component(name: &'static str, value: &str) -> Result<(), OwnerAssertionError> {
+/// Validate one bounded, nonempty owner component.
+pub(crate) fn validate_component(component: &'static str, value: &str) -> Result<(), StateOwnerError> {
     if value.is_empty() || value.len() > MAX_COMPONENT_BYTES || value.chars().any(char::is_control) {
-        return Err(OwnerAssertionError::InvalidComponent(name));
+        return Err(StateOwnerError { component });
     }
     Ok(())
 }
@@ -741,4 +797,9 @@ pub(crate) fn reject_owner(status: u16, code: &str, message: &str) -> FilterActi
             .with_header("content-type", "application/json")
             .with_body(serde_json::to_vec(&body).unwrap_or_default()),
     )
+}
+
+/// Emit only low-cardinality decision categories, never identity contents.
+fn log_owner_decision(outcome: &'static str, source: &'static str, reason: &'static str) {
+    tracing::debug!(outcome, source, reason, "state owner decision");
 }

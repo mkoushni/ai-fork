@@ -20,6 +20,7 @@ Usage:
     uv run tests/integration/sdk/openai/test_openai_conversations.py -v
 """
 
+import base64
 import json
 import os
 import signal
@@ -31,12 +32,26 @@ import time
 
 import httpx
 import pytest
-from openai import AuthenticationError, BadRequestError, NotFoundError, OpenAI
+from openai import (
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    OpenAI,
+)
 
 # When set to a postgres:// URL (the vllm-responses-postgres CI job), the
 # conversations store runs against PostgreSQL instead of the default in-memory
 # SQLite, so this suite exercises the same store backend as the responses tests.
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+OWNER_HEADER = "x-authenticated-state-owner"
+
+
+def _owner_assertion(subject: str) -> str:
+    payload = json.dumps(
+        ["sdk-tenant", "urn:praxis:sdk-test", subject], separators=(",", ":")
+    ).encode()
+    return "v1." + base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -107,6 +122,9 @@ def _conversations_filter() -> dict:
             {
                 "backend": "sqlite",
                 "database_url": "sqlite::memory:",
+                # Every pooled SQLite in-memory connection is a distinct
+                # database, so keep this SDK suite on one connection.
+                "pool": {"max_connections": 1},
             }
         )
     return cfg
@@ -124,7 +142,14 @@ def _write_config(port: int) -> str:
         "filter_chains": [
             {
                 "name": "conversations-pipeline",
-                "filters": [_conversations_filter()],
+                "filters": [
+                    {
+                        "filter": "state_owner",
+                        "mode": "trusted_owner",
+                        "header": OWNER_HEADER,
+                    },
+                    _conversations_filter(),
+                ],
             }
         ],
     }
@@ -208,6 +233,19 @@ def openai_client(praxis_proxy):
     return OpenAI(
         api_key="not-needed",
         base_url=f"http://127.0.0.1:{praxis_proxy}/v1",
+        default_headers={OWNER_HEADER: _owner_assertion("alice")},
+        max_retries=0,
+        timeout=10.0,
+    )
+
+
+@pytest.fixture(scope="session")
+def other_owner_client(praxis_proxy):
+    """Return a same-tenant client with a distinct immutable subject."""
+    return OpenAI(
+        api_key="not-needed",
+        base_url=f"http://127.0.0.1:{praxis_proxy}/v1",
+        default_headers={OWNER_HEADER: _owner_assertion("bob")},
         max_retries=0,
         timeout=10.0,
     )
@@ -384,7 +422,7 @@ class TestOpenAIConversations:
             openai_client.conversations.retrieve(conversation.id)
         assert exc_info.value.status_code == 404
 
-    def test_conversation_delete_preserves_items(self, openai_client):
+    def test_deleted_conversation_hides_preserved_item_rows(self, openai_client):
         conversation = openai_client.conversations.create(
             items=[
                 {
@@ -397,14 +435,45 @@ class TestOpenAIConversations:
         )
         openai_client.conversations.delete(conversation.id)
 
-        item = openai_client.conversations.items.retrieve(
-            "item_keep",
-            conversation_id=conversation.id,
+        with pytest.raises(NotFoundError) as exc_info:
+            openai_client.conversations.items.retrieve(
+                "item_keep",
+                conversation_id=conversation.id,
+            )
+        assert exc_info.value.status_code == 404
+
+    def test_same_tenant_other_owner_cannot_access_state(
+        self, openai_client, other_owner_client
+    ):
+        conversation = openai_client.conversations.create(
+            metadata={"visibility": "private"},
+            items=[
+                {
+                    "id": "item_owner_private",
+                    "type": "message",
+                    "role": "user",
+                    "content": "secret",
+                }
+            ],
         )
 
-        assert item.id == "item_keep"
-        assert item.type == "message"
-        assert item.content[0].text == "keep me"
+        with pytest.raises(NotFoundError):
+            other_owner_client.conversations.retrieve(conversation.id)
+        with pytest.raises(NotFoundError):
+            other_owner_client.conversations.items.list(conversation.id)
+        with pytest.raises(NotFoundError):
+            other_owner_client.conversations.items.retrieve(
+                "item_owner_private", conversation_id=conversation.id
+            )
+        with pytest.raises(NotFoundError):
+            other_owner_client.conversations.update(
+                conversation.id, metadata={"visibility": "public"}
+            )
+        with pytest.raises(NotFoundError):
+            other_owner_client.conversations.delete(conversation.id)
+
+        retrieved = openai_client.conversations.retrieve(conversation.id)
+        assert retrieved.metadata["visibility"] == "private"
 
     def test_empty_item_list_is_sdk_compatible(self, openai_client):
         conversation = openai_client.conversations.create()
@@ -679,7 +748,10 @@ class TestOpenAIConversations:
         response = httpx.get(
             f"{str(openai_client.base_url).rstrip('/')}"
             f"/conversations/{conversation.id}/items?{query}",
-            headers={"Authorization": "Bearer not-needed"},
+            headers={
+                "Authorization": "Bearer not-needed",
+                OWNER_HEADER: _owner_assertion("alice"),
+            },
             timeout=10,
         )
         assert response.status_code == 400
@@ -1112,7 +1184,7 @@ class TestConversationTenantIsolation:
         page = tenant_a.conversations.items.list(conversation.id)
         assert [item.id for item in page.data] == ["item_tenant_private"]
 
-    def test_same_item_id_can_exist_in_both_tenants(self, tenant_clients):
+    def test_item_id_cannot_transfer_between_tenants(self, tenant_clients):
         tenant_a, tenant_b = tenant_clients
         conversation_a = tenant_a.conversations.create(
             items=[
@@ -1124,27 +1196,24 @@ class TestConversationTenantIsolation:
                 }
             ],
         )
-        conversation_b = tenant_b.conversations.create(
-            items=[
-                {
-                    "id": "item_shared_across_tenants",
-                    "type": "message",
-                    "role": "user",
-                    "content": "tenant-b value",
-                }
-            ],
-        )
+        with pytest.raises(InternalServerError) as exc_info:
+            tenant_b.conversations.create(
+                items=[
+                    {
+                        "id": "item_shared_across_tenants",
+                        "type": "message",
+                        "role": "user",
+                        "content": "tenant-b value",
+                    }
+                ],
+            )
+        assert exc_info.value.status_code == 500
 
         item_a = tenant_a.conversations.items.retrieve(
             "item_shared_across_tenants",
             conversation_id=conversation_a.id,
         )
-        item_b = tenant_b.conversations.items.retrieve(
-            "item_shared_across_tenants",
-            conversation_id=conversation_b.id,
-        )
         assert item_a.content[0].text == "tenant-a value"
-        assert item_b.content[0].text == "tenant-b value"
 
     def test_denied_access_does_not_affect_callers_own_resources(
         self,
