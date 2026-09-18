@@ -112,6 +112,52 @@ fn nemo_guardrails_omitted_outbound_chain_uses_passthrough() {
 }
 
 #[test]
+fn nemo_guardrails_omitted_outbound_chain_uses_passthrough() {
+    let backend = start_backend_with_shutdown("ok");
+    let nemo = StatefulCapturingBackend::new(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())])
+        .start_with_shutdown();
+    let proxy_port = free_port();
+    let mut config = load_example_config(
+        "nemo-guardrails.yaml",
+        proxy_port,
+        HashMap::from([("127.0.0.1:3000", backend.port()), ("127.0.0.1:3001", nemo.port())]),
+    );
+    let guardrails_chain = config
+        .filter_chains
+        .iter_mut()
+        .find(|chain| chain.name == "nemo-guardrails")
+        .expect("example should define the main guardrails chain");
+    let guardrails = guardrails_chain
+        .filters
+        .iter_mut()
+        .find(|entry| entry.filter_type == "ai_guardrails")
+        .expect("example should define ai_guardrails");
+    let removed = guardrails
+        .config
+        .as_mapping_mut()
+        .expect("guardrails config should be a mapping")
+        .remove(serde_yaml::Value::from("outbound_chain"));
+    assert!(
+        removed.is_some(),
+        "example should explicitly configure an outbound chain"
+    );
+    config.filter_chains.retain(|chain| chain.name != "nemo-outbound");
+
+    let proxy = start_proxy(&config);
+    let (status, body) = http_post(
+        proxy.addr(),
+        "/v1/chat/completions",
+        r#"{"model":"test","messages":[{"role":"user","content":"Hello"}]}"#,
+    );
+
+    assert_eq!(status, 200, "empty outbound chain should pass the NeMo callout through");
+    assert_eq!(body, "ok");
+    let requests = nemo.requests();
+    assert_eq!(requests.len(), 1, "NeMo should receive the filtered subrequest");
+    assert_eq!(requests[0].uri, "/v1/checks");
+}
+
+#[test]
 fn nemo_guardrails_callout_runs_outbound_chain() {
     let backend = start_backend_with_shutdown("ok");
     let nemo = StatefulCapturingBackend::new(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())])
