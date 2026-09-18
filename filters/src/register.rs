@@ -539,7 +539,7 @@ mod tests {
 filter: ai_guardrails
 provider:
   type: nemo
-  endpoint: "http://nemo:8000/v1/guardrail/checks"
+  endpoint: "http://nemo:8000/v1/checks"
 "#,
             )
             .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
@@ -563,7 +563,7 @@ filter: ai_guardrails
 outbound_chain: missing-chain
 provider:
   type: nemo
-  endpoint: "http://nemo:8000/v1/guardrail/checks"
+  endpoint: "http://nemo:8000/v1/checks"
 "#,
             )
             .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
