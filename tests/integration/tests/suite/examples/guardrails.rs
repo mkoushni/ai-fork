@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use praxis_test_utils::{
-    Backend, BackendGuard, free_port, http_post, http_send, json_post, start_backend_with_shutdown, start_proxy,
-    start_stateful_backend,
+    Backend, BackendGuard, StatefulCapturingBackend, free_port, http_post, http_send, json_post,
+    start_backend_with_shutdown, start_proxy, start_stateful_backend,
 };
 
 use super::load_example_config;
@@ -52,7 +52,8 @@ fn nemo_guardrails_forwards_to_backend() {
 #[test]
 fn nemo_guardrails_callout_runs_outbound_chain() {
     let backend = start_backend_with_shutdown("ok");
-    let nemo = start_stateful_backend(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())]);
+    let nemo = StatefulCapturingBackend::new(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())])
+        .start_with_shutdown();
     let proxy_port = free_port();
     let config = load_example_config(
         "nemo-guardrails.yaml",
@@ -77,22 +78,16 @@ fn nemo_guardrails_callout_runs_outbound_chain() {
     assert_eq!(requests.len(), 1, "NeMo should receive exactly one callout");
     assert!(
         requests[0]
+            .headers
             .lines()
             .any(|line| line.to_ascii_lowercase().starts_with("x-request-id: ")),
-        "outbound chain should run request_id for the callout; request: {}",
-        requests[0]
+        "outbound chain should run request_id for the callout"
     );
-    assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
-    assert!(!requests[0].to_ascii_lowercase().contains("x-client-secret:"));
-    assert!(
-        requests[0].starts_with("POST /v1/checks "),
-        "callout must preserve the NeMo /v1/checks endpoint: {}",
-        requests[0]
-    );
-    let payload = requests[0]
-        .split_once("\r\n\r\n")
-        .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
-        .expect("NeMo callout should contain a JSON body");
+    assert!(!requests[0].headers.to_ascii_lowercase().contains("authorization:"));
+    assert!(!requests[0].headers.to_ascii_lowercase().contains("x-client-secret:"));
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].uri, "/v1/checks");
+    let payload: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
     assert_eq!(payload["guardrails"]["rail_types"], serde_json::json!(["input"]));
 }
 
@@ -102,7 +97,8 @@ fn nemo_guardrails_response_phase_runs_outbound_chain() {
         r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"safe"}}]}"#,
     )
     .start_with_shutdown();
-    let nemo = start_stateful_backend(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())]);
+    let nemo = StatefulCapturingBackend::new(vec![(200, r#"{"status":"passed","content":"safe"}"#.to_owned())])
+        .start_with_shutdown();
     let proxy_port = free_port();
     let config = load_example_config(
         "nemo-guardrails-response.yaml",
@@ -124,23 +120,22 @@ fn nemo_guardrails_response_phase_runs_outbound_chain() {
     assert!(!requests.is_empty(), "response phase should issue a NeMo callout");
     assert!(
         requests[0]
+            .headers
             .lines()
             .any(|line| line.to_ascii_lowercase().starts_with("x-request-id: "))
     );
-    let payload = requests[0]
-        .split_once("\r\n\r\n")
-        .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
-        .expect("NeMo callout should contain a JSON body");
+    let payload: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
     assert_eq!(payload["guardrails"]["rail_types"], serde_json::json!(["output"]));
 }
 
 #[test]
 fn nemo_guardrails_checks_each_user_turn_with_cumulative_history() {
     let backend = start_backend_with_shutdown("ok");
-    let nemo = start_stateful_backend(vec![
+    let nemo = StatefulCapturingBackend::new(vec![
         (200, r#"{"status":"passed","content":"first"}"#.to_owned()),
         (200, r#"{"status":"passed","content":"second"}"#.to_owned()),
-    ]);
+    ])
+    .start_with_shutdown();
     let proxy_port = free_port();
     let config = load_example_config(
         "nemo-guardrails.yaml",
@@ -160,12 +155,7 @@ fn nemo_guardrails_checks_each_user_turn_with_cumulative_history() {
     assert_eq!(requests.len(), 2, "each user turn should receive a /v1/checks callout");
     let payloads: Vec<serde_json::Value> = requests
         .iter()
-        .map(|request| {
-            request
-                .split_once("\r\n\r\n")
-                .and_then(|(_, body)| serde_json::from_str(body).ok())
-                .expect("NeMo callout should contain a JSON body")
-        })
+        .map(|request| serde_json::from_str(&request.body).expect("NeMo callout should contain a JSON body"))
         .collect();
     assert_eq!(payloads[0]["messages"].as_array().unwrap().len(), 1);
     assert_eq!(payloads[1]["messages"].as_array().unwrap().len(), 3);
