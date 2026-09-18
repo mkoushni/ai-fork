@@ -47,6 +47,14 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 /// pre-read body as untrusted input and rely on the outbound chain for
 /// destination-bound policy enforcement.
 ///
+/// **Wire format:** Chat Completions only (`messages` on requests,
+/// `choices[].message` on responses). Responses API, Anthropic Messages,
+/// and MCP are not supported yet (see ai#1043).
+///
+/// For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail
+/// configurations. When `provider.guardrails` is omitted, the request omits
+/// `config_ids` so the service can use its default configuration.
+///
 /// # YAML configuration
 ///
 /// ```yaml
@@ -54,7 +62,10 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 /// outbound_chain: nemo-outbound
 /// provider:
 ///   type: nemo
-///   endpoint: "http://nemo:8000/v1/guardrail/checks"
+///   endpoint: "http://nemo:8000/v1/checks"
+///   model: "check-model"
+///   guardrails:
+///     config_ids: ["your-config"]
 ///   timeout_ms: 5000
 /// phase:
 ///   request: true
@@ -134,8 +145,7 @@ impl AiGuardrailsFilter {
 
     /// Capture downstream identity, nesting, deadline, and the bound chain for a callout.
     fn callout_runtime(&self, ctx: &HttpFilterContext<'_>) -> GuardCalloutRuntime<'_> {
-        let deadline = ctx
-            .request_start
+        let deadline = Instant::now()
             .checked_add(self.callout_timeout)
             .unwrap_or_else(|| Instant::now() + self.callout_timeout);
 
@@ -365,7 +375,7 @@ fn record_verdict(
         },
         GuardResult::Block { reason } => Ok(enforce_block(body, reason, phase, phase_label, verdict)),
         GuardResult::Redact { reason, .. } => {
-            tracing::warn!(verdict, phase = phase_label, %reason, "ai_guardrails: verdict; forwarding unchanged until #579");
+            tracing::warn!(verdict, phase = phase_label, %reason, "ai_guardrails: verdict; forwarding unchanged until #49");
             Ok(FilterAction::Continue)
         },
     }

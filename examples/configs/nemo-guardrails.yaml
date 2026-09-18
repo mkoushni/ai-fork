@@ -4,9 +4,9 @@
 # For response-phase guardrails, see nemo-guardrails-response.yaml.
 #
 #   Request phase:
-#     success  - request forwarded to the upstream unchanged
+#     passed   - request forwarded to the upstream unchanged
 #     blocked  - 403 returned to the client (triggered rail names in body)
-#     error    - 500 returned to the client
+#     modified - redaction verdict recorded; original body forwarded until #49
 #
 # Start a local NeMo Guardrails instance before running this config.
 #
@@ -37,8 +37,13 @@ filter_chains:
           type: nemo
           # NeMo callouts are anonymous; no downstream authentication
           # headers are forwarded to this endpoint.
-          endpoint: "http://127.0.0.1:3001/v1/guardrail/checks"
+          # Requires NeMo Guardrails 0.24.0 or newer.
+          endpoint: "http://127.0.0.1:3001/v1/checks"
+          model: "check-model"
+          guardrails:
+            config_ids: ["your-config"] # replace with a configuration deployed in NeMo
           timeout_ms: 5000
+          max_message_checks: 32
         phase:
           request: true
           response: false  # see nemo-guardrails-response.yaml for response-phase example

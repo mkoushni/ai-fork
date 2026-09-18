@@ -58,10 +58,6 @@ pub enum GuardResult {
     ///
     /// `modified_text` is populated from `NeMo` but not applied to the request
     /// or response body until redaction support lands in `#49`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "redaction is reserved for provider implementations")
-    )]
     Redact {
         /// Provider-rewritten text with sensitive data masked.
         modified_text: String,
