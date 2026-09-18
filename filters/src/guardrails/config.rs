@@ -10,7 +10,7 @@ use serde::Deserialize;
 ///
 /// ```yaml
 /// filter: ai_guardrails
-/// outbound_chain: nemo-outbound
+/// outbound_chain: nemo-outbound # optional; defaults to an empty chain
 /// provider:
 ///   type: nemo
 ///   endpoint: "http://nemo:8000/v1/checks"
@@ -26,6 +26,10 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub(crate) struct AiGuardrailsConfig {
     /// Outbound filter chain executed for every `NeMo` callout.
+    ///
+    /// Optional. Callouts always run through the filtered-subrequest executor;
+    /// omitting this field uses an empty inline chain (pure passthrough).
+    #[serde(default = "default_outbound_chain")]
     pub outbound_chain: ChainRef,
 
     /// External provider configuration (required).
@@ -34,6 +38,14 @@ pub(crate) struct AiGuardrailsConfig {
     /// Which phases to evaluate.
     #[serde(default)]
     pub phase: PhaseConfig,
+}
+
+/// Default `outbound_chain` when the field is omitted: an empty inline chain.
+fn default_outbound_chain() -> ChainRef {
+    ChainRef::Inline {
+        name: "ai_guardrails_outbound".to_owned(),
+        filters: Vec::new(),
+    }
 }
 
 /// Supported external guardrail provider types.

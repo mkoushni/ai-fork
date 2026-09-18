@@ -803,7 +803,6 @@ unknown: 42
 fn guardrails_config_minimal_valid() {
     let parsed: AiGuardrailsConfig = serde_yaml::from_str(
         r#"
-outbound_chain: test-outbound
 provider:
   type: nemo
   endpoint: "http://nemo:8000/v1/checks"
@@ -812,6 +811,10 @@ provider:
     .unwrap();
 
     assert_eq!(parsed.provider.provider_type, ProviderType::Nemo);
+    assert!(
+        matches!(&parsed.outbound_chain, praxis_core::config::ChainRef::Inline { filters, .. } if filters.is_empty()),
+        "omitted outbound_chain should default to an empty inline chain"
+    );
 }
 
 #[test]

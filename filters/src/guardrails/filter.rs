@@ -36,16 +36,16 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 /// response bodies. The provider determines whether content should
 /// be passed, blocked, or redacted.
 ///
-/// Every provider callout runs through the configured `outbound_chain`
-/// using Praxis's filtered-subrequest executor. The outbound chain is
-/// the trust boundary for authentication, authorization, audit, and
-/// static service credentials. Parent and child contexts stay isolated;
-/// user-scoped credential projection is handled separately in #880.
+/// Every provider callout runs through Praxis's filtered-subrequest executor.
+/// The optional `outbound_chain` adds destination-bound authentication,
+/// authorization, audit, and static service credentials; when omitted it
+/// defaults to an empty pass-through chain. Parent and child contexts stay
+/// isolated; user-scoped credential projection is handled separately in #880.
 ///
 /// Because this filter reads the request body before the header-phase
 /// security filters on the main chain run, operators should treat the
-/// pre-read body as untrusted input and rely on the outbound chain for
-/// destination-bound policy enforcement.
+/// pre-read body as untrusted input and configure an outbound chain whenever
+/// the provider requires destination-bound policy enforcement.
 ///
 /// **Wire format:** Chat Completions only (`messages` on requests,
 /// `choices[].message` on responses). Responses API, Anthropic Messages,
@@ -59,7 +59,7 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 ///
 /// ```yaml
 /// filter: ai_guardrails
-/// outbound_chain: nemo-outbound
+/// outbound_chain: nemo-outbound # optional
 /// provider:
 ///   type: nemo
 ///   endpoint: "http://nemo:8000/v1/checks"
@@ -94,13 +94,13 @@ impl AiGuardrailsFilter {
         outbound: Arc<FilterPipeline>,
         client: SubRequestClient,
     ) -> Result<Box<dyn HttpFilter>, FilterError> {
-        // The registry resolves this reference before calling `build`; retaining
-        // it in the parsed config keeps unknown-field validation centralized.
-        let _ = &config.outbound_chain;
-        let provider: Box<dyn GuardProvider> = match config.provider.provider_type {
-            ProviderType::Nemo => Box::new(nemo::NemoProvider::from_config(&config.provider.config, client)?),
+        let (provider, callout_timeout): (Box<dyn GuardProvider>, _) = match config.provider.provider_type {
+            ProviderType::Nemo => {
+                let provider = nemo::NemoProvider::from_config(&config.provider.config, client)?;
+                let timeout = provider.callout_timeout();
+                (Box::new(provider), timeout)
+            },
         };
-        let callout_timeout = nemo::callout_timeout_from_config(&config.provider.config)?;
 
         Ok(Box::new(Self {
             provider,
@@ -115,8 +115,8 @@ impl AiGuardrailsFilter {
     /// Production pipelines must register `ai_guardrails` through
     /// [`register_chain_binding`](praxis_filter::FilterRegistry::register_chain_binding)
     /// so the outbound chain is resolved at construction time. This
-    /// constructor exists for tests and builds a pass-through outbound
-    /// chain inline when `outbound_chain` is absent.
+    /// constructor exists for tests and builds a permissive outbound test
+    /// pipeline directly.
     ///
     /// # Errors
     ///
@@ -137,8 +137,7 @@ impl AiGuardrailsFilter {
         config: &serde_yaml::Value,
         client: SubRequestClient,
     ) -> Result<Box<dyn HttpFilter>, FilterError> {
-        let config = test_config_with_outbound_chain(config);
-        let cfg: AiGuardrailsConfig = parse_filter_config("ai_guardrails", &config)?;
+        let cfg: AiGuardrailsConfig = parse_filter_config("ai_guardrails", config)?;
         let outbound = test_outbound_chain()?;
         Self::build(cfg, outbound, client)
     }
@@ -161,16 +160,6 @@ impl AiGuardrailsFilter {
             outbound: &self.outbound,
         }
     }
-}
-
-#[cfg(test)]
-/// Supply the construction-time chain reference omitted by direct unit tests.
-fn test_config_with_outbound_chain(config: &serde_yaml::Value) -> serde_yaml::Value {
-    let mut config = config.clone();
-    if let Some(mapping) = config.as_mapping_mut() {
-        mapping.entry("outbound_chain".into()).or_insert("test-outbound".into());
-    }
-    config
 }
 
 #[cfg(test)]
@@ -301,7 +290,7 @@ impl HttpFilter for AiGuardrailsFilter {
             return Ok(FilterAction::Continue);
         }
 
-        let evaluation = extract_response_messages(bytes).map(|messages| {
+        let evaluation = extract_response_messages(bytes).and_then(|messages| {
             let handle = tokio::runtime::Handle::current();
             let runtime = self.callout_runtime(ctx);
             // `on_response_body` is sync (Pingora constraint); use `block_in_place`
@@ -312,17 +301,7 @@ impl HttpFilter for AiGuardrailsFilter {
         });
 
         match evaluation {
-            Ok(Ok(result)) => record_verdict(ctx, body, result, GuardPhase::Response),
-            Ok(Err(e)) => {
-                tracing::error!(error = %e, "ai_guardrails: response-phase evaluation failed");
-                replace_body_with_error(
-                    body,
-                    &format!("Guardrail evaluation failed: {e}"),
-                    "guardrail_error",
-                    "evaluation_failed",
-                );
-                Ok(FilterAction::Continue)
-            },
+            Ok(result) => record_verdict(ctx, body, result, GuardPhase::Response),
             Err(e) => {
                 tracing::error!(error = %e, "ai_guardrails: response-phase evaluation failed");
                 replace_body_with_error(

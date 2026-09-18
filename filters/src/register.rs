@@ -353,7 +353,7 @@ fn register_openai_agentic_filters(registry: &mut FilterRegistry) {
 // -----------------------------------------------------------------------------
 
 /// Register `ai_guardrails` as a chain-binding filter that resolves its
-/// outbound chain at construction time.
+/// optional outbound chain at construction time.
 #[expect(clippy::panic, reason = "matches register_filters! macro convention")]
 fn register_ai_guardrails(registry: &mut FilterRegistry, subrequest_client: Option<&SubRequestClient>) {
     let isolated_client = SubRequestClient::new(praxis_core::subrequest::SubRequestConnector::new(4, None));
@@ -364,16 +364,9 @@ fn register_ai_guardrails(registry: &mut FilterRegistry, subrequest_client: Opti
             "ai_guardrails",
             std::sync::Arc::new(
                 move |config: &serde_yaml::Value, ctx: &praxis_filter::ChainBindingContext<'_>| {
-                    let chain_ref: praxis_core::config::ChainRef =
-                        serde_yaml::from_value(config.get("outbound_chain").cloned().ok_or_else(|| {
-                            praxis_filter::FilterError::from("ai_guardrails: missing outbound_chain")
-                        })?)
-                        .map_err(|error| {
-                            praxis_filter::FilterError::from(format!("ai_guardrails: bad outbound_chain: {error}"))
-                        })?;
-                    let outbound = std::sync::Arc::new(ctx.bind_chain(&chain_ref)?);
                     let cfg: crate::guardrails::config::AiGuardrailsConfig =
                         praxis_filter::parse_filter_config("ai_guardrails", config)?;
+                    let outbound = std::sync::Arc::new(ctx.bind_chain(&cfg.outbound_chain)?);
                     let client = shared_client.clone().unwrap_or_else(|| isolated_client.clone());
                     AiGuardrailsFilter::build(cfg, outbound, client)
                 },
@@ -550,7 +543,7 @@ mod tests {
 
     #[test]
     #[expect(clippy::panic, reason = "the test fixture is compile-time controlled")]
-    fn ai_guardrails_requires_outbound_chain_in_production_registry() {
+    fn ai_guardrails_defaults_to_empty_outbound_chain() {
         let registry = build_ai_registry();
         let mut entries = vec![
             serde_yaml::from_str(
@@ -564,11 +557,8 @@ provider:
             .unwrap_or_else(|error| panic!("guardrails entry should parse: {error}")),
         ];
         let chains = HashMap::new();
-        let result = FilterPipeline::build_with_chains(&mut entries, &registry, &chains, &InsecureOptions::default());
-        assert!(
-            result.is_err(),
-            "production registry must reject a missing outbound_chain"
-        );
+        FilterPipeline::build_with_chains(&mut entries, &registry, &chains, &InsecureOptions::default())
+            .expect("omitting outbound_chain should build an empty pass-through chain");
     }
 
     #[test]

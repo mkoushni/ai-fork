@@ -21,6 +21,8 @@ filter_chains:
   - name: nemo-guardrails-response
     filters:
       - filter: ai_guardrails
+        # Optional. Omit for an empty pass-through chain; configure one when
+        # NeMo callouts need credentials, tracing, or destination policy.
         outbound_chain: nemo-outbound
         provider:
           type: nemo
