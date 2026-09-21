@@ -306,7 +306,11 @@ impl NemoProvider {
 
 /// Reject an explicitly empty configuration selection.
 fn validate_guardrails_config(config: &NemoConfig) -> Result<(), FilterError> {
-    if config.guardrails.as_ref().is_some_and(|guardrails| guardrails.config_ids.is_empty()) {
+    if config
+        .guardrails
+        .as_ref()
+        .is_some_and(|guardrails| guardrails.config_ids.is_empty())
+    {
         return Err(
             "ai_guardrails (nemo): 'guardrails.config_ids' must not be empty; omit 'guardrails' to use the service default"
                 .into(),

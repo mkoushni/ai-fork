@@ -13,7 +13,7 @@ Because this filter reads the request body before the header-phase security filt
 
 **Wire format:** Chat Completions only (`messages` on requests, `choices[].message` on responses). Responses API, Anthropic Messages, and MCP are not supported yet (see ai#1043).
 
-For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail configurations. When `provider.guardrails` is omitted, the request omits `config_ids` so the service can use its default configuration.
+For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail configurations. When `provider.guardrails` is omitted, the request omits `config_ids` so the service can use its default configuration. Omit `provider.model` to leave the selected configuration's models unchanged; a non-empty value replaces or adds its main model.
 
 ## Configuration
 
@@ -34,7 +34,6 @@ outbound_chain: nemo-outbound # optional
 provider:
   type: nemo
   endpoint: "http://nemo:8000/v1/checks"
-  model: "check-model"
   guardrails:
     config_ids: ["your-config"]
   timeout_ms: 5000
