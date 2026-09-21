@@ -16,8 +16,8 @@ use praxis_core::{
 #[cfg(test)]
 use praxis_filter::parse_filter_config;
 use praxis_filter::{
-    BodyAccess, BodyMode, FilterAction, FilterError, FilterPipeline, HttpFilter, HttpFilterContext, Rejection,
-    SubrequestRuntime,
+    BodyAccess, BodyMode, FilterAction, FilterError, FilterPipeline, HttpFilter, HttpFilterContext, IterationState,
+    Rejection, SubrequestRuntime,
 };
 
 use super::{
@@ -321,16 +321,23 @@ impl HttpFilter for AiGuardrailsFilter {
 // Private Utilities
 // -----------------------------------------------------------------------------
 
-/// Extract the current filtered-subrequest depth from the framework header.
-#[expect(clippy::cast_possible_truncation, reason = "depth is clamped to u8::MAX before cast")]
+/// Extract the current filtered-subrequest depth from trusted runtime state.
 fn subrequest_depth(ctx: &HttpFilterContext<'_>) -> u8 {
-    ctx.request
-        .headers
-        .get(DEPTH_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0)
-        .min(u32::from(u8::MAX)) as u8
+    resolve_subrequest_depth(
+        ctx.extensions.get::<IterationState>().map(IterationState::depth),
+        &ctx.request.headers,
+    )
+}
+
+/// Resolve nesting depth, preferring IRR-owned state over the framework header.
+fn resolve_subrequest_depth(iteration_state_depth: Option<u8>, headers: &http::HeaderMap) -> u8 {
+    iteration_state_depth.unwrap_or_else(|| {
+        headers
+            .get(DEPTH_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(0)
+    })
 }
 
 /// Record the provider verdict in `ctx.filter_results` and map it to
@@ -482,4 +489,30 @@ fn is_event_stream(ctx: &HttpFilterContext<'_>) -> bool {
                 .next()
                 .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/event-stream"))
         })
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use http::{HeaderMap, HeaderValue};
+
+    use super::{DEPTH_HEADER, resolve_subrequest_depth};
+
+    #[test]
+    fn depth_prefers_iteration_state_over_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEPTH_HEADER, HeaderValue::from_static("7"));
+        assert_eq!(resolve_subrequest_depth(Some(3), &headers), 3);
+    }
+
+    #[test]
+    fn depth_falls_back_to_framework_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEPTH_HEADER, HeaderValue::from_static("4"));
+        assert_eq!(resolve_subrequest_depth(None, &headers), 4);
+    }
+
+    #[test]
+    fn depth_defaults_to_zero_without_trusted_state() {
+        assert_eq!(resolve_subrequest_depth(None, &HeaderMap::new()), 0);
+    }
 }
