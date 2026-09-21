@@ -145,9 +145,12 @@ impl AiGuardrailsFilter {
 
     /// Capture downstream identity, nesting, deadline, and the bound chain for a callout.
     fn callout_runtime(&self, ctx: &HttpFilterContext<'_>) -> GuardCalloutRuntime<'_> {
-        let deadline = Instant::now()
-            .checked_add(self.callout_timeout)
-            .unwrap_or_else(|| Instant::now() + self.callout_timeout);
+        let now = Instant::now();
+        let deadline = effective_callout_deadline(
+            now,
+            self.callout_timeout,
+            ctx.extensions.get::<IterationState>().map(IterationState::deadline),
+        );
 
         GuardCalloutRuntime {
             downstream: SubrequestRuntime::new(
@@ -340,6 +343,16 @@ fn resolve_subrequest_depth(iteration_state_depth: Option<u8>, headers: &http::H
     })
 }
 
+/// Bound the provider timeout by the enclosing IRR deadline, when present.
+fn effective_callout_deadline(
+    now: Instant,
+    callout_timeout: std::time::Duration,
+    iteration_deadline: Option<Instant>,
+) -> Instant {
+    let provider_deadline = now.checked_add(callout_timeout).unwrap_or(now);
+    iteration_deadline.map_or(provider_deadline, |deadline| provider_deadline.min(deadline))
+}
+
 /// Record the provider verdict in `ctx.filter_results` and map it to
 /// the corresponding [`FilterAction`].
 fn record_verdict(
@@ -493,9 +506,11 @@ fn is_event_stream(ctx: &HttpFilterContext<'_>) -> bool {
 
 #[cfg(test)]
 mod depth_tests {
+    use std::time::{Duration, Instant};
+
     use http::{HeaderMap, HeaderValue};
 
-    use super::{DEPTH_HEADER, resolve_subrequest_depth};
+    use super::{DEPTH_HEADER, effective_callout_deadline, resolve_subrequest_depth};
 
     #[test]
     fn depth_prefers_iteration_state_over_header() {
@@ -514,5 +529,24 @@ mod depth_tests {
     #[test]
     fn depth_defaults_to_zero_without_trusted_state() {
         assert_eq!(resolve_subrequest_depth(None, &HeaderMap::new()), 0);
+    }
+
+    #[test]
+    fn callout_deadline_uses_provider_timeout_without_iteration() {
+        let now = Instant::now();
+        assert_eq!(
+            effective_callout_deadline(now, Duration::from_secs(5), None),
+            now + Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn callout_deadline_is_capped_by_iteration() {
+        let now = Instant::now();
+        let iteration_deadline = now + Duration::from_secs(2);
+        assert_eq!(
+            effective_callout_deadline(now, Duration::from_secs(5), Some(iteration_deadline)),
+            iteration_deadline
+        );
     }
 }
