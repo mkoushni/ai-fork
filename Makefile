@@ -14,6 +14,7 @@ V                ?=
 # crate; it is not a praxis-ai-filters feature.
 FILTER_EXPERIMENTAL_FEATURES := azure-ad-filter,gcp-adc-filter,http-callout-filter,token-rate-limit-filter
 INTEGRATION_EXPERIMENTAL_FEATURES := azure-ad-filter,basic-auth-filter,gcp-adc-filter,http-callout-filter,token-rate-limit-filter
+STORE_ALL_WORKSPACE_FEATURES := praxis-ai-proxy/store-all,praxis-tests-integration/store-all,praxis-tests-schema/store-all,praxis-tests-environment/store-all
 
 ifneq ($(V),)
   _NOCAPTURE := -- --nocapture
@@ -21,6 +22,7 @@ endif
 
 .PHONY: all build release check clean \
 	test test-unit test-schema test-integration test-inference-fixtures \
+	test-store-features \
 	test-postgres-unit test-postgres-integration test-environment \
 	test-token-rate-limit-valkey-unit test-token-rate-limit-valkey-integration \
 	openai-conformance check-openai-conformance-reference test-openai-conformance \
@@ -83,25 +85,52 @@ test-unit:
 	cargo test -p praxis-ai-proxy --features basic-auth-filter $(_NOCAPTURE)
 	cargo test -p praxis-ai-build-support $(_NOCAPTURE)
 
+test-store-features:
+	cargo check -p praxis-ai-proxy
+	cargo check -p praxis-ai-proxy --no-default-features --features store-sqlite
+	cargo check -p praxis-ai-proxy --no-default-features --features store-all
+	cargo test -p praxis-ai-apis --no-default-features --features store-sqlite $(_NOCAPTURE)
+	cargo test -p praxis-ai-apis --no-default-features --features store-all $(_NOCAPTURE)
+	@if cargo tree -p praxis-ai-proxy --edges normal | grep -q libsqlite3-sys; then \
+		echo "ERROR: default proxy dependency graph contains libsqlite3-sys"; \
+		exit 1; \
+	fi
+	@cargo tree -p praxis-ai-proxy --edges features -i sqlx-core | grep -q '_tls-native-tls' || \
+		(echo "ERROR: default proxy SQLx graph does not enable native TLS"; exit 1)
+	@if cargo tree -p praxis-ai-proxy --edges features -i sqlx-core | grep -q '_tls-rustls'; then \
+		echo "ERROR: default proxy SQLx graph contains a rustls TLS backend"; \
+		exit 1; \
+	fi
+
 test-schema:
-	cargo test -p praxis-tests-schema $(_NOCAPTURE)
+	cargo test -p praxis-tests-schema --no-default-features --features store-all $(_NOCAPTURE)
 
 test-integration:
-	cargo test -p praxis-tests-integration $(_NOCAPTURE)
-	cargo test -p praxis-tests-integration --features $(INTEGRATION_EXPERIMENTAL_FEATURES) --test suite \
+	cargo test -p praxis-tests-integration --no-default-features --features store-all $(_NOCAPTURE)
+	cargo test -p praxis-tests-integration --no-default-features --features store-all,$(INTEGRATION_EXPERIMENTAL_FEATURES) --test suite \
 		-- examples::azure_ad examples::gcp_adc examples::lakera_guard examples::token_rate_limit \
 		$(if $(V),--nocapture)
 
 test-inference-fixtures:
-	cargo test -p praxis-test-utils $(_NOCAPTURE)
-	cargo test -p xtask inference_fixtures $(_NOCAPTURE)
-	cargo test -p praxis-tests-integration --test suite inference_fixtures $(_NOCAPTURE)
+	cargo test -p praxis-test-utils --no-default-features --features store-all $(_NOCAPTURE)
+	cargo test -p xtask --no-default-features --features store-all inference_fixtures $(_NOCAPTURE)
+	cargo test -p praxis-tests-integration --no-default-features --features store-all --test suite inference_fixtures $(_NOCAPTURE)
 
 test-postgres-unit:
-	cargo test -p praxis-ai-apis store::tests::pg_ -- --ignored $(_NOCAPTURE)
+	cargo test -p praxis-ai-apis --no-default-features --features store-all store::tests::pg_ -- --ignored $(_NOCAPTURE)
 
+# Every PostgreSQL integration test is #[ignore]d (each spawns its own
+# container), so it runs only when named here. Enumerate every module explicitly:
+# a bare substring filter such as `openai_response_store_postgres` incidentally
+# matches the response-store mTLS variant (a prefix) but cannot select the
+# Conversations certificate-auth module, silently dropping it from CI. Filters
+# must follow `--` so libtest treats each as an OR filter. Add every new
+# PostgreSQL integration module to this list.
 test-postgres-integration:
-	cargo test -p praxis-tests-integration --test suite openai_response_store_postgres -- --ignored $(_NOCAPTURE)
+	cargo test -p praxis-tests-integration --test suite -- --ignored \
+		openai_response_store_postgres \
+		openai_response_store_postgres_mtls \
+		openai_conversations_postgres_mtls $(if $(V),--nocapture)
 
 test-token-rate-limit-valkey-unit:
 	cargo test -p praxis-ai-filters --features token-rate-limit-filter valkey $(_NOCAPTURE)
@@ -163,7 +192,7 @@ audit:
 	cargo deny check
 
 coverage-check:
-	cargo llvm-cov --workspace --json \
+	cargo llvm-cov --workspace --features $(STORE_ALL_WORKSPACE_FEATURES) --json \
 		--exclude xtask \
 		--ignore-filename-regex '(target/|tests/|store/postgres\.rs)' \
 		--output-path coverage.json
@@ -231,6 +260,7 @@ help:
 	@echo "Test:"
 	@echo "  test                 run all tests"
 	@echo "  test-unit            unit tests (providers, filters, server)"
+	@echo "  test-store-features   check PostgreSQL-only, SQLite-only, and combined store builds"
 	@echo "  test-schema          schema validation tests"
 	@echo "  test-integration     integration tests"
 	@echo "  test-inference-fixtures  inference fixture and replay tests"

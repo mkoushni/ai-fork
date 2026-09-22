@@ -1232,9 +1232,13 @@ mod tests {
                 vec!["messages_to_chat_completions"],
                 vec!["messages_to_chat_completions"],
                 vec!["messages_to_chat_completions"],
+                vec!["messages_to_chat_completions"],
+                vec!["messages_to_chat_completions"],
                 vec!["messages_native_passthrough"],
                 vec!["messages_native_passthrough"],
                 vec!["messages_native_passthrough"],
+                vec!["messages_native_passthrough"],
+                vec!["responses_native_passthrough"],
                 vec!["responses_native_passthrough"],
                 vec!["responses_native_passthrough"],
                 vec!["responses_native_passthrough"],
@@ -1251,6 +1255,8 @@ mod tests {
                 vec!["responses_to_chat_completions"],
                 vec!["responses_to_chat_completions"],
                 vec!["responses_to_chat_completions"],
+                vec!["responses_to_chat_completions"],
+                vec!["responses_client_tool_compat"],
                 vec!["responses_client_tool_compat"],
             ]
         );
@@ -1268,12 +1274,18 @@ mod tests {
                 CoverageStatus::LiveCovered,
                 CoverageStatus::SyntheticOnly,
                 CoverageStatus::SyntheticOnly,
+                CoverageStatus::SyntheticOnly,
+                CoverageStatus::SyntheticOnly,
                 CoverageStatus::LiveCovered,
                 CoverageStatus::LiveCovered,
                 CoverageStatus::LiveCovered,
+                CoverageStatus::SyntheticOnly,
                 CoverageStatus::LiveCovered,
                 CoverageStatus::LiveCovered,
                 CoverageStatus::LiveCovered,
+                CoverageStatus::SyntheticOnly,
+                CoverageStatus::SyntheticOnly,
+                CoverageStatus::SyntheticOnly,
                 CoverageStatus::SyntheticOnly,
                 CoverageStatus::SyntheticOnly,
                 CoverageStatus::SyntheticOnly,
@@ -1290,9 +1302,9 @@ mod tests {
                 CoverageStatus::SyntheticOnly,
             ]
         );
-        assert_eq!(report.features_total, 27);
-        assert_eq!(report.scenarios_total, 27);
-        assert_eq!(report.recordings_total, 32);
+        assert_eq!(report.features_total, 33);
+        assert_eq!(report.scenarios_total, 33);
+        assert_eq!(report.recordings_total, 38);
         assert_eq!(
             scenarios.keys().collect::<Vec<_>>(),
             vec![
@@ -1302,21 +1314,27 @@ mod tests {
                 "messages/malformed-tool-arguments",
                 "messages/native-basic-nonstream",
                 "messages/native-basic-stream",
+                "messages/native-count-tokens",
                 "messages/native-tool-use",
+                "messages/provider-parameter-passthrough",
                 "messages/typed-server-tools",
+                "messages/unrepresentable-parameters",
                 "messages/upstream-error",
                 "responses/agentic-deferred-mcp-connectors",
                 "responses/agentic-parallel-tool-calls",
                 "responses/agentic-status-less-function-call",
+                "responses/background-unsupported",
                 "responses/chat-basic-nonstream",
                 "responses/chat-basic-stream",
                 "responses/chat-file-search",
                 "responses/chat-malformed-compaction",
+                "responses/chat-structured-output-with-tools",
                 "responses/chat-tool-echo",
                 "responses/chat-unrepresentable-parameters",
                 "responses/chat-web-search",
                 "responses/chat-web-search-stream",
                 "responses/client-tool-compat",
+                "responses/client-tool-compat-stream",
                 "responses/irr-terminal-streaming",
                 "responses/native-basic-nonstream",
                 "responses/native-basic-stream",
@@ -1325,7 +1343,7 @@ mod tests {
                 "responses/native-tool-call",
             ]
         );
-        assert_eq!(manifest.features.len(), 27);
+        assert_eq!(manifest.features.len(), 33);
         assert_eq!(manifest.version, 1);
         assert_eq!(
             manifest
@@ -1369,6 +1387,14 @@ mod tests {
                     &vec!["messages/malformed-success".to_owned()]
                 ),
                 (
+                    &"messages.request.provider_parameter_passthrough".to_owned(),
+                    &vec!["messages/provider-parameter-passthrough".to_owned()]
+                ),
+                (
+                    &"messages.request.unrepresentable_parameters".to_owned(),
+                    &vec!["messages/unrepresentable-parameters".to_owned()]
+                ),
+                (
                     &"messages.native.request".to_owned(),
                     &vec![
                         "messages/native-basic-nonstream".to_owned(),
@@ -1388,6 +1414,10 @@ mod tests {
                     &vec!["messages/native-tool-use".to_owned()]
                 ),
                 (
+                    &"messages.native.count_tokens".to_owned(),
+                    &vec!["messages/native-count-tokens".to_owned()]
+                ),
+                (
                     &"responses.native.request".to_owned(),
                     &vec![
                         "responses/native-basic-nonstream".to_owned(),
@@ -1405,6 +1435,10 @@ mod tests {
                 (
                     &"responses.native.tool_call".to_owned(),
                     &vec!["responses/native-tool-call".to_owned()]
+                ),
+                (
+                    &"responses.request.background_unsupported".to_owned(),
+                    &vec!["responses/background-unsupported".to_owned()]
                 ),
                 (
                     &"responses.native.continuation".to_owned(),
@@ -1471,8 +1505,16 @@ mod tests {
                     &vec!["responses/chat-tool-echo".to_owned()]
                 ),
                 (
+                    &"responses.chat.structured_output_with_tools".to_owned(),
+                    &vec!["responses/chat-structured-output-with-tools".to_owned()]
+                ),
+                (
                     &"responses.client_tool_compat.lower_restore".to_owned(),
                     &vec!["responses/client-tool-compat".to_owned()]
+                ),
+                (
+                    &"responses.client_tool_compat.stream_restore".to_owned(),
+                    &vec!["responses/client-tool-compat-stream".to_owned()]
                 ),
             ]
         );
@@ -1527,7 +1569,7 @@ mod tests {
                 ("vllm", CoverageStatus::LiveCovered),
             ]
         );
-        for feature in &manifest.features[5..7] {
+        for feature in &manifest.features[5..9] {
             assert_eq!(
                 feature
                     .providers
@@ -1537,7 +1579,7 @@ mod tests {
                 vec![("synthetic", CoverageStatus::SyntheticOnly)]
             );
         }
-        for feature in &manifest.features[7..10] {
+        for feature in &manifest.features[9..12] {
             assert_eq!(
                 feature
                     .providers
@@ -1547,7 +1589,15 @@ mod tests {
                 vec![("anthropic", CoverageStatus::LiveCovered)]
             );
         }
-        for feature in &manifest.features[10..13] {
+        assert_eq!(
+            manifest.features[12]
+                .providers
+                .iter()
+                .map(|(provider, coverage)| (provider.as_str(), coverage.status.clone()))
+                .collect::<Vec<_>>(),
+            vec![("synthetic", CoverageStatus::SyntheticOnly)]
+        );
+        for feature in &manifest.features[13..16] {
             assert_eq!(
                 feature
                     .providers
@@ -1560,7 +1610,7 @@ mod tests {
                 ]
             );
         }
-        for feature in &manifest.features[13..] {
+        for feature in &manifest.features[16..] {
             assert_eq!(
                 feature
                     .providers

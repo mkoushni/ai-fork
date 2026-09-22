@@ -6,11 +6,10 @@
 # response-phase behavior in isolation.
 #
 #   Response phase:
-#     success  - response forwarded to the client unchanged
+#     passed   - response forwarded to the client unchanged
 #     blocked  - response body replaced with a JSON error payload
 #                (status remains 200 because headers are already committed)
-#     error    - response body replaced with a JSON error payload
-#                (same as blocked; headers are already committed)
+#     modified - redaction verdict recorded; original body forwarded until #49
 
 listeners:
   - name: gateway
@@ -22,11 +21,17 @@ filter_chains:
   - name: nemo-guardrails-response
     filters:
       - filter: ai_guardrails
+        # Optional. Omit for an empty pass-through chain; configure one when
+        # NeMo callouts need credentials, tracing, or destination policy.
         outbound_chain: nemo-outbound
         provider:
           type: nemo
-          endpoint: "http://127.0.0.1:3001/v1/guardrail/checks"
+          # Requires NeMo Guardrails 0.24.0 or newer.
+          endpoint: "http://127.0.0.1:3001/v1/checks"
+          guardrails:
+            config_ids: ["your-config"] # replace with a configuration deployed in NeMo
           timeout_ms: 5000
+          max_message_checks: 32
         phase:
           request: false
           response: true

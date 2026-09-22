@@ -6,7 +6,6 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use sqlx::{
     AssertSqlSafe, Row as _,
     postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode},
@@ -14,7 +13,9 @@ use sqlx::{
 use tracing::info;
 
 use super::{
+    SslMode,
     pool::{PoolConfig, apply_pool_config},
+    postgres_tls::PgTlsConfig,
     schemas::{
         ActualKeyColumn, ActualTable, ActualUniqueIndex, SCHEMA_VERSION, SchemaCheck, TableNames, check_schema,
         expected_tables, generate_ddl, pending_approvals_table, pg_key_column_folding, schema_version_table,
@@ -24,40 +25,6 @@ use super::{
     types::{ConversationItemRecord, ConversationRecord, PendingApprovalRecord, ResponseRecord, StoreError},
 };
 use crate::StateOwner;
-
-// -----------------------------------------------------------------------------
-// SslMode
-// -----------------------------------------------------------------------------
-
-/// TLS mode for `PostgreSQL` connections.
-///
-/// Maps to [`PgSslMode`] from sqlx. Defaults to [`VerifyFull`] which
-/// requires TLS and verifies both the server certificate chain and
-/// hostname. Use [`Disable`] or [`Prefer`] only for local development
-/// with an explicit opt-in.
-///
-/// [`VerifyFull`]: SslMode::VerifyFull
-/// [`Disable`]: SslMode::Disable
-/// [`Prefer`]: SslMode::Prefer
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SslMode {
-    /// Do not use TLS.
-    Disable,
-
-    /// Attempt TLS, fall back to plaintext.
-    Prefer,
-
-    /// Require TLS (reject plaintext).
-    Require,
-
-    /// Require TLS and verify the server certificate chain.
-    VerifyCa,
-
-    /// Require TLS and verify both certificate chain and hostname.
-    #[default]
-    VerifyFull,
-}
 
 impl From<SslMode> for PgSslMode {
     fn from(mode: SslMode) -> Self {
@@ -100,12 +67,15 @@ impl PostgresResponseStore {
     /// `items_table`, when provided, enables the conversation items
     /// table for storing individual conversation entries.
     ///
-    /// `ssl_mode` always overrides any `sslmode` in the URL —
-    /// explicitly when provided, or with the [`SslMode::VerifyFull`]
-    /// default when omitted. Use [`SslMode::VerifyCa`] or [`SslMode::VerifyFull`]
-    /// with `ssl_root_cert` to verify the server against a custom
-    /// CA. Certificate path existence is validated at connection
-    /// time, not at construction.
+    /// `tls` carries the TLS mode and certificate paths. `ssl_mode`
+    /// always overrides any `sslmode` in the URL — explicitly when
+    /// provided, or with the [`SslMode::VerifyFull`] default when
+    /// omitted. Use [`SslMode::VerifyCa`] or [`SslMode::VerifyFull`]
+    /// with `ssl_root_cert` to verify the server against a custom CA,
+    /// and `ssl_client_cert`/`ssl_client_key` for mutual TLS.
+    /// Certificate path existence is validated at connection time, not
+    /// at construction. See [`PgTlsConfig`] for the certificate-
+    /// authentication compliance profile.
     ///
     /// # Errors
     ///
@@ -113,15 +83,14 @@ impl PostgresResponseStore {
     /// initialization, or table name validation fails.
     #[expect(
         clippy::too_many_arguments,
-        reason = "constructor mirrors SqliteResponseStore::new with SSL and pool additions"
+        reason = "distinct connection, table-name, TLS, and pool inputs are clearer passed explicitly than bundled"
     )]
     pub async fn new(
         database_url: &str,
         responses_table: &str,
         conversations_table: &str,
         items_table: Option<&str>,
-        ssl_mode: Option<SslMode>,
-        ssl_root_cert: Option<&str>,
+        tls: &PgTlsConfig<'_>,
         pool_config: Option<&PoolConfig>,
     ) -> Result<Self, StoreError> {
         let tables = TableNames {
@@ -132,7 +101,7 @@ impl PostgresResponseStore {
         validate_postgres_identifiers(&tables)?;
         let ddl = generate_ddl(&tables)?;
 
-        let options = pg_connect_options(database_url, ssl_mode, ssl_root_cert)?;
+        let options = pg_connect_options(database_url, tls)?;
         let pool = Box::pin(apply_pool_config(PgPoolOptions::new(), pool_config).connect_with(options))
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
@@ -233,28 +202,76 @@ impl PostgresResponseStore {
     }
 }
 
-/// Build `PostgreSQL` connection options from URL and optional TLS overrides.
+/// Build `PostgreSQL` connection options from a URL and TLS settings.
 ///
 /// Always applies an SSL mode: the explicit override when provided,
 /// otherwise [`SslMode::VerifyFull`]. This overrides any `sslmode`
-/// embedded in the URL to ensure TLS-verified connections by default.
-fn pg_connect_options(
-    database_url: &str,
-    ssl_mode: Option<SslMode>,
-    ssl_root_cert: Option<&str>,
-) -> Result<PgConnectOptions, StoreError> {
-    let mut options: PgConnectOptions = database_url
+/// embedded in the URL to ensure TLS-verified connections by default,
+/// and applies the configured root CA and client certificate/key.
+///
+/// When [`PgTlsConfig::require_certificate_authentication`] is set, the
+/// options are rebuilt from a password-file-free base so a stray
+/// `~/.pgpass` entry cannot inject a password that would drive
+/// application-side (`RustCrypto`) SCRAM/MD5 cryptography. Filter
+/// validation has already rejected any password embedded in the URL and
+/// the `PGPASSWORD` environment variable, so the effective password is
+/// `None`.
+fn pg_connect_options(database_url: &str, tls: &PgTlsConfig<'_>) -> Result<PgConnectOptions, StoreError> {
+    let parsed: PgConnectOptions = database_url
         .parse()
         .map_err(|e: sqlx::Error| StoreError::Database(e.to_string()))?;
 
-    let effective_mode = ssl_mode.unwrap_or_default();
+    let mut options = if tls.require_certificate_authentication {
+        rebuild_without_password_file(&parsed)
+    } else {
+        parsed
+    };
+
+    let effective_mode = tls.ssl_mode.unwrap_or_default();
     options = options.ssl_mode(PgSslMode::from(effective_mode));
 
-    if let Some(cert_path) = ssl_root_cert {
+    if let Some(cert_path) = tls.ssl_root_cert {
         options = options.ssl_root_cert(Path::new(cert_path));
+    }
+    if let Some(cert_path) = tls.ssl_client_cert {
+        options = options.ssl_client_cert(Path::new(cert_path));
+    }
+    if let Some(key_path) = tls.ssl_client_key {
+        options = options.ssl_client_key(Path::new(key_path));
     }
 
     Ok(options)
+}
+
+/// Rebuild connection options from a password-file-free base.
+///
+/// Copies only the addressing fields (host, port, socket, username,
+/// database) from `parsed` onto [`PgConnectOptions::new_without_pgpass`],
+/// which never reads `~/.pgpass`. TLS fields are applied by the caller.
+/// The resulting password is `None` (the `PGPASSWORD` environment
+/// variable is rejected by the compliance-profile validation before this
+/// runs), so no password reaches the connection.
+///
+/// Copying only addressing fields is lossless here because compliance-profile
+/// validation runs first and fails closed on any other URL connection parameter
+/// (`application_name`, `options`/`options[...]`, `statement-cache-capacity`) —
+/// see `postgres_url_dropped_connection_param`. `SQLx` exposes no getter for the
+/// statement-cache capacity and `get_options` cannot round-trip through the
+/// key/value `options` setter, so those parameters cannot be carried faithfully;
+/// rejecting them upstream keeps this rebuild from silently dropping settings
+/// such as `search_path` that would otherwise redirect store DDL and queries.
+fn rebuild_without_password_file(parsed: &PgConnectOptions) -> PgConnectOptions {
+    let mut rebuilt = PgConnectOptions::new_without_pgpass()
+        .host(parsed.get_host())
+        .port(parsed.get_port())
+        .username(parsed.get_username());
+    if let Some(database) = parsed.get_database() {
+        rebuilt = rebuilt.database(database);
+    }
+    if let Some(socket) = parsed.get_socket() {
+        rebuilt = rebuilt.socket(socket);
+    }
+    rebuilt
 }
 
 /// Fetch column names for a `PostgreSQL` table from `information_schema`.
@@ -1203,10 +1220,6 @@ impl ConversationItemStore for PostgresResponseStore {
         row.try_get("max_pos").map_err(|e| StoreError::Database(e.to_string()))
     }
 
-    #[expect(
-        clippy::large_stack_frames,
-        reason = "sqlx transaction state is boxed and remains just above the lint threshold"
-    )]
     async fn create_items_and_sync_messages(
         &self,
         owner: &StateOwner,
@@ -1568,7 +1581,7 @@ mod tests {
 
     #[test]
     fn connect_options_defaults_to_verify_full() {
-        let options = pg_connect_options("postgres://user:pass@example.com/db", None, None)
+        let options = pg_connect_options("postgres://user:pass@example.com/db", &PgTlsConfig::default())
             .expect("URL without sslmode should parse");
 
         assert!(
@@ -1579,8 +1592,11 @@ mod tests {
 
     #[test]
     fn connect_options_default_overrides_url_sslmode() {
-        let options = pg_connect_options("postgres://user:pass@example.com/db?sslmode=prefer", None, None)
-            .expect("URL with sslmode should parse");
+        let options = pg_connect_options(
+            "postgres://user:pass@example.com/db?sslmode=prefer",
+            &PgTlsConfig::default(),
+        )
+        .expect("URL with sslmode should parse");
 
         assert!(
             matches!(options.get_ssl_mode(), PgSslMode::VerifyFull),
@@ -1590,12 +1606,12 @@ mod tests {
 
     #[test]
     fn connect_options_uses_explicit_sslmode_override() {
-        let options = pg_connect_options(
-            "postgres://user:pass@example.com/db?sslmode=verify-full",
-            Some(SslMode::Disable),
-            None,
-        )
-        .expect("URL with override should parse");
+        let tls = PgTlsConfig {
+            ssl_mode: Some(SslMode::Disable),
+            ..PgTlsConfig::default()
+        };
+        let options = pg_connect_options("postgres://user:pass@example.com/db?sslmode=verify-full", &tls)
+            .expect("URL with override should parse");
 
         assert!(
             matches!(options.get_ssl_mode(), PgSslMode::Disable),
@@ -1605,7 +1621,43 @@ mod tests {
 
     #[test]
     fn connect_options_applies_ssl_root_cert() {
-        pg_connect_options("postgres://user:pass@example.com/db", None, Some("/path/to/ca.pem"))
-            .expect("ssl_root_cert path should be accepted");
+        let tls = PgTlsConfig {
+            ssl_root_cert: Some("/path/to/ca.pem"),
+            ..PgTlsConfig::default()
+        };
+        pg_connect_options("postgres://user:pass@example.com/db", &tls).expect("ssl_root_cert path should be accepted");
+    }
+
+    #[test]
+    fn connect_options_applies_client_cert_and_key() {
+        let tls = PgTlsConfig {
+            ssl_mode: Some(SslMode::VerifyFull),
+            ssl_root_cert: Some("/path/to/ca.pem"),
+            ssl_client_cert: Some("/path/to/client.pem"),
+            ssl_client_key: Some("/path/to/client.key"),
+            require_certificate_authentication: false,
+        };
+        pg_connect_options("postgres://user@example.com/db", &tls).expect("client cert/key paths should be accepted");
+    }
+
+    #[test]
+    fn connect_options_cert_auth_preserves_addressing() {
+        // The compliance-profile rebuild must retain host, port, username, and
+        // database while dropping password sources.
+        let tls = PgTlsConfig {
+            ssl_mode: Some(SslMode::VerifyFull),
+            ssl_root_cert: Some("/path/to/ca.pem"),
+            ssl_client_cert: Some("/path/to/client.pem"),
+            ssl_client_key: Some("/path/to/client.key"),
+            require_certificate_authentication: true,
+        };
+        let options = pg_connect_options("postgres://cert-user@example.com:6543/praxis", &tls)
+            .expect("compliance profile URL should parse");
+
+        assert_eq!(options.get_host(), "example.com");
+        assert_eq!(options.get_port(), 6543);
+        assert_eq!(options.get_username(), "cert-user");
+        assert_eq!(options.get_database(), Some("praxis"));
+        assert!(matches!(options.get_ssl_mode(), PgSslMode::VerifyFull));
     }
 }

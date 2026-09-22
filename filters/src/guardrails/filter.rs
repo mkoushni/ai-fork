@@ -3,10 +3,7 @@
 
 //! [`AiGuardrailsFilter`] implementation and `HttpFilter` trait impl.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -19,8 +16,8 @@ use praxis_core::{
 #[cfg(test)]
 use praxis_filter::parse_filter_config;
 use praxis_filter::{
-    BodyAccess, BodyMode, FilterAction, FilterError, FilterPipeline, HttpFilter, HttpFilterContext, Rejection,
-    SubrequestRuntime,
+    BodyAccess, BodyMode, FilterAction, FilterError, FilterPipeline, HttpFilter, HttpFilterContext, IterationState,
+    Rejection, SubrequestRuntime,
 };
 
 use super::{
@@ -39,25 +36,37 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 /// response bodies. The provider determines whether content should
 /// be passed, blocked, or redacted.
 ///
-/// Every provider callout runs through the configured `outbound_chain`
-/// using Praxis's filtered-subrequest executor. The outbound chain is
-/// the trust boundary for authentication, authorization, audit, and
-/// static service credentials. Parent and child contexts stay isolated;
-/// user-scoped credential projection is handled separately in #880.
+/// Every provider callout runs through Praxis's filtered-subrequest executor.
+/// The optional `outbound_chain` adds destination-bound authentication,
+/// authorization, audit, and static service credentials; when omitted it
+/// defaults to an empty pass-through chain. Parent and child contexts stay
+/// isolated; user-scoped credential projection is handled separately in #880.
 ///
 /// Because this filter reads the request body before the header-phase
 /// security filters on the main chain run, operators should treat the
-/// pre-read body as untrusted input and rely on the outbound chain for
-/// destination-bound policy enforcement.
+/// pre-read body as untrusted input and configure an outbound chain whenever
+/// the provider requires destination-bound policy enforcement.
+///
+/// **Wire format:** Chat Completions only (`messages` on requests,
+/// `choices[].message` on responses). Responses API, Anthropic Messages,
+/// and MCP are not supported yet (see ai#1043).
+///
+/// For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail
+/// configurations. When `provider.guardrails` is omitted, the request omits
+/// `config_ids` so the service can use its default configuration. Omit
+/// `provider.model` to leave the selected configuration's models unchanged;
+/// a non-empty value replaces or adds its main model.
 ///
 /// # YAML configuration
 ///
 /// ```yaml
 /// filter: ai_guardrails
-/// outbound_chain: nemo-outbound
+/// outbound_chain: nemo-outbound # optional
 /// provider:
 ///   type: nemo
-///   endpoint: "http://nemo:8000/v1/guardrail/checks"
+///   endpoint: "http://nemo:8000/v1/checks"
+///   guardrails:
+///     config_ids: ["your-config"]
 ///   timeout_ms: 5000
 /// phase:
 ///   request: true
@@ -71,7 +80,7 @@ pub struct AiGuardrailsFilter {
     /// Prebuilt outbound filter chain for provider callouts.
     outbound: Arc<FilterPipeline>,
     /// Per-callout deadline derived from the provider configuration.
-    callout_timeout: Duration,
+    callout_timeout: std::time::Duration,
 }
 
 impl AiGuardrailsFilter {
@@ -86,10 +95,7 @@ impl AiGuardrailsFilter {
         outbound: Arc<FilterPipeline>,
         client: SubRequestClient,
     ) -> Result<Box<dyn HttpFilter>, FilterError> {
-        // The registry resolves this reference before calling `build`; retaining
-        // it in the parsed config keeps unknown-field validation centralized.
-        let _ = &config.outbound_chain;
-        let (provider, callout_timeout): (Box<dyn GuardProvider>, Duration) = match config.provider.provider_type {
+        let (provider, callout_timeout): (Box<dyn GuardProvider>, _) = match config.provider.provider_type {
             ProviderType::Nemo => {
                 let provider = nemo::NemoProvider::from_config(&config.provider.config, client)?;
                 let timeout = provider.callout_timeout();
@@ -110,8 +116,8 @@ impl AiGuardrailsFilter {
     /// Production pipelines must register `ai_guardrails` through
     /// [`register_chain_binding`](praxis_filter::FilterRegistry::register_chain_binding)
     /// so the outbound chain is resolved at construction time. This
-    /// constructor exists for tests and builds a pass-through outbound
-    /// chain inline when `outbound_chain` is absent.
+    /// constructor exists for tests and builds a permissive outbound test
+    /// pipeline directly.
     ///
     /// # Errors
     ///
@@ -132,18 +138,19 @@ impl AiGuardrailsFilter {
         config: &serde_yaml::Value,
         client: SubRequestClient,
     ) -> Result<Box<dyn HttpFilter>, FilterError> {
-        let config = test_config_with_outbound_chain(config);
-        let cfg: AiGuardrailsConfig = parse_filter_config("ai_guardrails", &config)?;
+        let cfg: AiGuardrailsConfig = parse_filter_config("ai_guardrails", config)?;
         let outbound = test_outbound_chain()?;
         Self::build(cfg, outbound, client)
     }
 
     /// Capture downstream identity, nesting, deadline, and the bound chain for a callout.
     fn callout_runtime(&self, ctx: &HttpFilterContext<'_>) -> GuardCalloutRuntime<'_> {
-        let deadline = ctx
-            .request_start
-            .checked_add(self.callout_timeout)
-            .unwrap_or_else(|| Instant::now() + self.callout_timeout);
+        let now = Instant::now();
+        let deadline = effective_callout_deadline(
+            now,
+            self.callout_timeout,
+            ctx.extensions.get::<IterationState>().map(IterationState::deadline),
+        );
 
         GuardCalloutRuntime {
             downstream: SubrequestRuntime::new(
@@ -157,16 +164,6 @@ impl AiGuardrailsFilter {
             outbound: &self.outbound,
         }
     }
-}
-
-#[cfg(test)]
-/// Supply the construction-time chain reference omitted by direct unit tests.
-fn test_config_with_outbound_chain(config: &serde_yaml::Value) -> serde_yaml::Value {
-    let mut config = config.clone();
-    if let Some(mapping) = config.as_mapping_mut() {
-        mapping.entry("outbound_chain".into()).or_insert("test-outbound".into());
-    }
-    config
 }
 
 #[cfg(test)]
@@ -297,7 +294,7 @@ impl HttpFilter for AiGuardrailsFilter {
             return Ok(FilterAction::Continue);
         }
 
-        let evaluation = extract_response_messages(bytes).map(|messages| {
+        let evaluation = extract_response_messages(bytes).and_then(|messages| {
             let handle = tokio::runtime::Handle::current();
             let runtime = self.callout_runtime(ctx);
             // `on_response_body` is sync (Pingora constraint); use `block_in_place`
@@ -308,8 +305,8 @@ impl HttpFilter for AiGuardrailsFilter {
         });
 
         match evaluation {
-            Ok(Ok(result)) => record_verdict(ctx, body, result, GuardPhase::Response),
-            Ok(Err(e)) | Err(e) => {
+            Ok(result) => record_verdict(ctx, body, result, GuardPhase::Response),
+            Err(e) => {
                 tracing::error!(error = %e, "ai_guardrails: response-phase evaluation failed");
                 replace_body_with_error(
                     body,
@@ -327,16 +324,33 @@ impl HttpFilter for AiGuardrailsFilter {
 // Private Utilities
 // -----------------------------------------------------------------------------
 
-/// Extract the current filtered-subrequest depth from the framework header.
-#[expect(clippy::cast_possible_truncation, reason = "depth is clamped to u8::MAX before cast")]
+/// Extract the current filtered-subrequest depth from trusted runtime state.
 fn subrequest_depth(ctx: &HttpFilterContext<'_>) -> u8 {
-    ctx.request
-        .headers
-        .get(DEPTH_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0)
-        .min(u32::from(u8::MAX)) as u8
+    resolve_subrequest_depth(
+        ctx.extensions.get::<IterationState>().map(IterationState::depth),
+        &ctx.request.headers,
+    )
+}
+
+/// Resolve nesting depth, preferring IRR-owned state over the framework header.
+fn resolve_subrequest_depth(iteration_state_depth: Option<u8>, headers: &http::HeaderMap) -> u8 {
+    iteration_state_depth.unwrap_or_else(|| {
+        headers
+            .get(DEPTH_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Bound the provider timeout by the enclosing IRR deadline, when present.
+fn effective_callout_deadline(
+    now: Instant,
+    callout_timeout: std::time::Duration,
+    iteration_deadline: Option<Instant>,
+) -> Instant {
+    let provider_deadline = now.checked_add(callout_timeout).unwrap_or(now);
+    iteration_deadline.map_or(provider_deadline, |deadline| provider_deadline.min(deadline))
 }
 
 /// Record the provider verdict in `ctx.filter_results` and map it to
@@ -361,7 +375,7 @@ fn record_verdict(
         },
         GuardResult::Block { reason } => Ok(enforce_block(body, reason, phase, phase_label, verdict)),
         GuardResult::Redact { reason, .. } => {
-            tracing::warn!(verdict, phase = phase_label, %reason, "ai_guardrails: verdict; forwarding unchanged until #579");
+            tracing::warn!(verdict, phase = phase_label, %reason, "ai_guardrails: verdict; forwarding unchanged until #49");
             Ok(FilterAction::Continue)
         },
     }
@@ -488,4 +502,51 @@ fn is_event_stream(ctx: &HttpFilterContext<'_>) -> bool {
                 .next()
                 .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/event-stream"))
         })
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use std::time::{Duration, Instant};
+
+    use http::{HeaderMap, HeaderValue};
+
+    use super::{DEPTH_HEADER, effective_callout_deadline, resolve_subrequest_depth};
+
+    #[test]
+    fn depth_prefers_iteration_state_over_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEPTH_HEADER, HeaderValue::from_static("7"));
+        assert_eq!(resolve_subrequest_depth(Some(3), &headers), 3);
+    }
+
+    #[test]
+    fn depth_falls_back_to_framework_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(DEPTH_HEADER, HeaderValue::from_static("4"));
+        assert_eq!(resolve_subrequest_depth(None, &headers), 4);
+    }
+
+    #[test]
+    fn depth_defaults_to_zero_without_trusted_state() {
+        assert_eq!(resolve_subrequest_depth(None, &HeaderMap::new()), 0);
+    }
+
+    #[test]
+    fn callout_deadline_uses_provider_timeout_without_iteration() {
+        let now = Instant::now();
+        assert_eq!(
+            effective_callout_deadline(now, Duration::from_secs(5), None),
+            now + Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn callout_deadline_is_capped_by_iteration() {
+        let now = Instant::now();
+        let iteration_deadline = now + Duration::from_secs(2);
+        assert_eq!(
+            effective_callout_deadline(now, Duration::from_secs(5), Some(iteration_deadline)),
+            iteration_deadline
+        );
+    }
 }
