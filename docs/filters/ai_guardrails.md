@@ -19,7 +19,7 @@ For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail configur
 
 | Field | Type | Required | Description |
 |-------|------|---------|-------------|
-| `outbound_chain` | ChainRef | no | Outbound filter chain executed for every `NeMo` callout. Optional. Callouts always run through the filtered-subrequest executor; omitting this field uses an empty inline chain (pure passthrough). |
+| `outbound_chain` | string \| object | no | Outbound filter chain executed for every `NeMo` callout. Optional. Callouts always run through the filtered-subrequest executor; omitting this field uses an empty inline chain (pure passthrough). |
 | `provider` | ProviderConfig | yes | External provider configuration (required). |
 | `provider.type` | `nemo` | yes | Provider type selector. |
 | `phase` | PhaseConfig | no | Which phases to evaluate. |
