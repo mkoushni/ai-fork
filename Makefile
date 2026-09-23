@@ -548,7 +548,8 @@ unpatch-praxis:
 
 setup-hooks:
 	ln -sf ../../.hooks/pre-commit .git/hooks/pre-commit
-	@echo "Git hooks installed."
+	ln -sf ../../.hooks/commit-msg .git/hooks/commit-msg
+	@echo "Git hooks installed (pre-commit and DCO commit-msg checks)."
 
 # -------------------------------------------------------------------
 # Help
