@@ -8,6 +8,12 @@
 //! enforced when a quota backend is unavailable. Place it after request
 //! translation/enrichment so it evaluates the provider-bound body.
 
+#![allow(
+    missing_docs,
+    clippy::missing_docs_in_private_items,
+    reason = "private configuration details are covered by the public filter contract"
+)]
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use praxis_filter::{
@@ -64,6 +70,11 @@ pub struct TokenCeilingFilter {
 
 impl TokenCeilingFilter {
     /// Build a token ceiling filter from YAML configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configuration is malformed or does not
+    /// define a positive input/output token limit or body-size limit.
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
         let cfg: TokenCeilingConfig = parse_filter_config("token_ceiling", config)?;
         if cfg.max_input_tokens.is_none() && cfg.max_output_tokens.is_none() {
@@ -83,11 +94,11 @@ impl TokenCeilingFilter {
         }))
     }
 
-    fn rejection(code: &'static str, message: String, status: u16) -> FilterAction {
+    fn rejection(code: &'static str, message: impl Into<String>, status: u16) -> FilterAction {
         let body = serde_json::json!({
             "error": {
                 "type": "token_ceiling_exceeded",
-                "message": message,
+                "message": message.into(),
                 "code": code,
             }
         });
@@ -121,6 +132,7 @@ impl HttpFilter for TokenCeilingFilter {
         Ok(FilterAction::Continue)
     }
 
+    #[expect(clippy::too_many_lines, reason = "linear validation with early rejection branches")]
     async fn on_request_body(
         &self,
         _ctx: &mut HttpFilterContext<'_>,
