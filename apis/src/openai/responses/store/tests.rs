@@ -1816,6 +1816,7 @@ async fn pipeline_persists_after_format_request_body_classification() {
     cleanup_sqlite_file(&db_path);
 }
 
+#[cfg(feature = "openai-conversations")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pipeline_persists_chunked_response_with_unarmed_conversations_filter() {
     let (db_url, db_path) = temp_sqlite_url("pipeline_persists_chunked_with_conversations");
