@@ -21,6 +21,7 @@ Usage:
 """
 
 import base64
+import http.server
 import json
 import os
 import signal
@@ -28,6 +29,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 import httpx
@@ -191,6 +193,114 @@ def _write_tenant_config(port: int) -> str:
     return path
 
 
+class _ChunkedResponsesBackend(http.server.BaseHTTPRequestHandler):
+    """Return a successful Responses JSON object in two HTTP chunks."""
+
+    protocol_version = "HTTP/1.1"
+    response_body = json.dumps(
+        {
+            "id": "resp_sdk_chunked",
+            "created_at": 1000,
+            "model": "gpt-4.1",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "chunked"},
+                    ],
+                },
+            ],
+        },
+        separators=(",", ":"),
+    ).encode()
+
+    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        content_length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(content_length)
+
+        split_at = len(self.response_body) // 2
+        chunks = (self.response_body[:split_at], self.response_body[split_at:])
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(f"{len(chunk):x}\r\n".encode())
+            self.wfile.write(chunk)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def log_message(self, _format, *_args):
+        return
+
+
+def _write_chunked_response_config(proxy_port: int, backend_port: int, db_path: str) -> str:
+    database_url = f"sqlite://{db_path}?mode=rwc"
+    config = {
+        "listeners": [
+            {
+                "name": "responses-test",
+                "address": f"127.0.0.1:{proxy_port}",
+                "filter_chains": ["responses-test-pipeline"],
+            }
+        ],
+        "filter_chains": [
+            {
+                "name": "responses-test-pipeline",
+                "filters": [
+                    {
+                        "filter": "state_owner",
+                        "mode": "trusted_owner",
+                        "header": OWNER_HEADER,
+                    },
+                    {
+                        "filter": "openai_conversations",
+                        "backend": "sqlite",
+                        "database_url": database_url,
+                        "conversations_table": "conversations",
+                        "items_table": "conversation_items",
+                        "pool": {"max_connections": 1},
+                    },
+                    {"filter": "openai_responses_format"},
+                    {
+                        "filter": "openai_response_store",
+                        "backend": "sqlite",
+                        "database_url": database_url,
+                        "responses_table": "responses",
+                        "conversations_table": "conversations",
+                        "pool": {"max_connections": 1},
+                    },
+                    {
+                        "filter": "router",
+                        "routes": [
+                            {"path": "/v1/responses", "cluster": "responses-backend"}
+                        ],
+                    },
+                    {
+                        "filter": "load_balancer",
+                        "clusters": [
+                            {
+                                "name": "responses-backend",
+                                "endpoints": [f"127.0.0.1:{backend_port}"],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+        "insecure_options": {"allow_private_endpoints": True},
+    }
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    with os.fdopen(fd, "w") as f:
+        json.dump(config, f)
+    return path
+
+
 def _wait_for_proxy(port: int, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -237,6 +347,49 @@ def openai_client(praxis_proxy):
         max_retries=0,
         timeout=10.0,
     )
+
+
+@pytest.fixture
+def chunked_response_client():
+    """Start a composed response-store/Conversations proxy and chunked backend."""
+    backend = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), _ChunkedResponsesBackend
+    )
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+
+    with tempfile.TemporaryDirectory() as db_dir:
+        proxy_port = _free_port()
+        db_path = os.path.join(db_dir, "responses.db")
+        config_path = _write_chunked_response_config(
+            proxy_port, backend.server_port, db_path
+        )
+        binary = _find_binary()
+        proc = subprocess.Popen(
+            [binary, "-c", config_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            _wait_for_proxy(proxy_port)
+            yield OpenAI(
+                api_key="not-needed",
+                base_url=f"http://127.0.0.1:{proxy_port}/v1",
+                default_headers={OWNER_HEADER: _owner_assertion("alice")},
+                max_retries=0,
+                timeout=10.0,
+            )
+        finally:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            os.unlink(config_path)
+            backend.shutdown()
+            backend.server_close()
+            backend_thread.join(timeout=5)
 
 
 @pytest.fixture(scope="session")
@@ -317,6 +470,19 @@ class TestOpenAIConversations:
         assert conversation.metadata["topic"] == "demo"
         assert isinstance(conversation.created_at, int)
         assert conversation.created_at > 0
+
+    def test_chunked_response_is_retrievable_with_composed_filters(
+        self, chunked_response_client
+    ):
+        response = chunked_response_client.responses.create(
+            model="gpt-4.1",
+            input="Hello",
+        )
+
+        assert response.id == "resp_sdk_chunked"
+        retrieved = chunked_response_client.responses.retrieve(response.id)
+        assert retrieved.id == response.id
+        assert retrieved.status == "completed"
 
     def test_conversation_create_no_metadata(self, openai_client):
         conversation = openai_client.conversations.create()

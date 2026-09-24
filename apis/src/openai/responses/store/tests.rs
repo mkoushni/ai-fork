@@ -1882,21 +1882,24 @@ async fn pipeline_persists_chunked_response_with_unarmed_conversations_filter() 
     });
     let response_bytes = serde_json::to_vec(&response_json).unwrap();
     let split_at = response_bytes.len() / 2;
-    let first = &response_bytes[..split_at];
+    let full_body = Bytes::from(response_bytes);
 
-    let mut first_body = Some(Bytes::copy_from_slice(first));
-    assert!(matches!(
-        pipeline
-            .execute_http_response_body(&mut ctx, &mut first_body, false)
-            .unwrap(),
-        FilterAction::Continue
-    ));
+    let mut first_body = Some(full_body.slice(..split_at));
+    let first_action = pipeline
+        .execute_http_response_body(&mut ctx, &mut first_body, false)
+        .unwrap();
 
-    // `StreamBuffer` suppresses the first chunk downstream and presents the
-    // frozen aggregate at EOS. Mirror that protocol boundary here; passing
-    // only the second chunk would test an unbuffered stream rather than the
-    // regression.
-    let mut second_body = Some(Bytes::from(response_bytes));
+    // `StreamBuffer` releases the first chunk unchanged when a filter returns
+    // `Release`; subsequent callbacks then receive only the tail. When every
+    // filter continues, the protocol retains the first chunk and presents the
+    // frozen aggregate at EOS. Mirror both paths so the persistence assertion
+    // catches a premature release rather than merely checking the action.
+    let eos_body = if matches!(&first_action, FilterAction::Release) {
+        full_body.slice(split_at..)
+    } else {
+        full_body.clone()
+    };
+    let mut second_body = Some(eos_body);
     assert!(matches!(
         pipeline
             .execute_http_response_body(&mut ctx, &mut second_body, true)
@@ -1913,6 +1916,7 @@ async fn pipeline_persists_chunked_response_with_unarmed_conversations_filter() 
         .unwrap()
         .expect("chunked response must be persisted when Conversations is unarmed");
     assert_eq!(record.response_object, response_json);
+    assert!(matches!(&first_action, FilterAction::Continue));
 
     drop(store);
     drop(pipeline);
