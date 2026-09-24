@@ -156,7 +156,10 @@ def _write_config(port: int) -> str:
 
 
 def _write_tenant_config(port: int) -> str:
-    conversations_filter = _conversations_filter(f"tenant_sdk_{port}")
+    # Keep the generated `{conversations}_unused_responses` identifier below
+    # PostgreSQL's 45-byte validation limit while retaining per-process
+    # isolation from the main SDK fixture.
+    conversations_filter = _conversations_filter(f"t_{port}")
     config = {
         "listeners": [
             {
