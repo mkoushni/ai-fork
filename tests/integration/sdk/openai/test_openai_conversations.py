@@ -239,13 +239,43 @@ class _ChunkedResponsesBackend(http.server.BaseHTTPRequestHandler):
         return
 
 
-def _write_chunked_response_config(proxy_port: int, backend_port: int, db_path: str) -> str:
-    database_url = f"sqlite://{db_path}?mode=rwc"
+def _chunked_response_store_filters(db_path: str) -> tuple[dict, dict]:
+    """Build matching Conversations and response-store filters for this CI job."""
+    tables = {
+        "conversations_table": "chunked_conversations",
+        "items_table": "chunked_conversation_items",
+    }
+    if DATABASE_URL.startswith("postgres"):
+        store = {
+            "backend": "postgres",
+            "database_url": DATABASE_URL,
+            "allow_private_database_url": True,
+            "ssl_mode": "disable",
+        }
+    else:
+        store = {
+            "backend": "sqlite",
+            "database_url": f"sqlite://{db_path}?mode=rwc",
+            "pool": {"max_connections": 1},
+        }
+
+    conversations = {"filter": "openai_conversations", **store, **tables}
+    response_store = {
+        "filter": "openai_response_store",
+        **store,
+        "responses_table": "chunked_responses",
+        "conversations_table": tables["conversations_table"],
+    }
+    return conversations, response_store
+
+
+def _write_chunked_response_config(port: int, backend_port: int, db_path: str) -> str:
+    conversations_filter, response_store_filter = _chunked_response_store_filters(db_path)
     config = {
         "listeners": [
             {
                 "name": "responses-test",
-                "address": f"127.0.0.1:{proxy_port}",
+                "address": f"127.0.0.1:{port}",
                 "filter_chains": ["responses-test-pipeline"],
             }
         ],
@@ -258,23 +288,9 @@ def _write_chunked_response_config(proxy_port: int, backend_port: int, db_path: 
                         "mode": "trusted_owner",
                         "header": OWNER_HEADER,
                     },
-                    {
-                        "filter": "openai_conversations",
-                        "backend": "sqlite",
-                        "database_url": database_url,
-                        "conversations_table": "conversations",
-                        "items_table": "conversation_items",
-                        "pool": {"max_connections": 1},
-                    },
+                    conversations_filter,
                     {"filter": "openai_responses_format"},
-                    {
-                        "filter": "openai_response_store",
-                        "backend": "sqlite",
-                        "database_url": database_url,
-                        "responses_table": "responses",
-                        "conversations_table": "conversations",
-                        "pool": {"max_connections": 1},
-                    },
+                    response_store_filter,
                     {
                         "filter": "router",
                         "routes": [
@@ -301,9 +317,14 @@ def _write_chunked_response_config(proxy_port: int, backend_port: int, db_path: 
     return path
 
 
-def _wait_for_proxy(port: int, timeout: float = 10.0) -> None:
+def _wait_for_proxy(port: int, process: subprocess.Popen | None = None, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            stderr = process.stderr.read().strip() if process.stderr is not None else ""
+            raise RuntimeError(
+                f"proxy exited with status {process.returncode} before binding: {stderr}"
+            )
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
@@ -368,10 +389,11 @@ def chunked_response_client():
         proc = subprocess.Popen(
             [binary, "-c", config_path],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         try:
-            _wait_for_proxy(proxy_port)
+            _wait_for_proxy(proxy_port, proc)
             yield OpenAI(
                 api_key="not-needed",
                 base_url=f"http://127.0.0.1:{proxy_port}/v1",
