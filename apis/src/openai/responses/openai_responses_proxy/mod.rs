@@ -152,8 +152,16 @@ impl ResponsesProxyFilter {
     }
 
     /// Serialize the rebuilt body from conversation state.
-    fn serialize_body(&self, state: &ResponsesState) -> Result<Result<Vec<u8>, FilterAction>, FilterError> {
-        let serialized = serialize_outbound_body(state)
+    fn serialize_body(
+        &self,
+        ctx: &HttpFilterContext<'_>,
+        state: &ResponsesState,
+    ) -> Result<Result<Vec<u8>, FilterAction>, FilterError> {
+        let preserve_native_compaction = ctx
+            .extensions
+            .get::<NativeOpenaiResponsesUpstream>()
+            .is_some_and(|capability| capability.0);
+        let serialized = serialize_outbound_body(state, preserve_native_compaction)
             .map_err(|e| -> FilterError { format!("openai_responses_proxy: {e}").into() })?;
         if serialized.len() > self.config.max_rewritten_body_bytes {
             debug!(
@@ -213,6 +221,8 @@ impl HttpFilter for ResponsesProxyFilter {
         ctx: &mut HttpFilterContext<'_>,
         body: &mut Option<Bytes>,
     ) -> Result<SelectedUpstreamBodyOutcome, FilterError> {
+        ctx.extensions
+            .insert(NativeOpenaiResponsesUpstream(is_openai_responses_provider(ctx)));
         if let Some(action) = Self::reject_prompt_for_non_openai_upstream(ctx, body) {
             return Ok(action);
         }
@@ -234,7 +244,7 @@ impl HttpFilter for ResponsesProxyFilter {
             return Ok(SelectedUpstreamBodyOutcome::Continue);
         }
 
-        let serialized = match self.serialize_body(state)? {
+        let serialized = match self.serialize_body(ctx, state)? {
             Ok(bytes) => bytes,
             Err(FilterAction::Reject(rejection)) => return Ok(SelectedUpstreamBodyOutcome::Reject(rejection)),
             Err(_) => return Err("openai_responses_proxy: invalid selected-upstream body outcome".into()),
@@ -248,6 +258,7 @@ impl HttpFilter for ResponsesProxyFilter {
 
         Ok(SelectedUpstreamBodyOutcome::Continue)
     }
+
 }
 
 /// Narrow deserialization target for the provider-visible stream bit.
@@ -344,6 +355,15 @@ impl Visitor<'_> for PromptTemplateFieldVisitor {
     }
 }
 
+/// Capability captured after upstream selection and before body processing.
+///
+/// The selected-cluster metadata is published during the request-header phase,
+/// while `ResponsesState` is serialized during the request-body phase. Keeping
+/// the decision in request extensions makes the body rewrite independent of
+/// hook ordering and prevents an untagged backend from receiving opaque native
+/// compaction state.
+#[derive(Clone, Copy)]
+struct NativeOpenaiResponsesUpstream(bool);
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
@@ -402,6 +422,9 @@ fn select_terminal_response_mode(ctx: &mut HttpFilterContext<'_>, body: &Option<
 struct OutboundBody<'a> {
     /// Shared request state to project into the provider body.
     state: &'a ResponsesState,
+    /// Preserve provider-native compaction items instead of translating them
+    /// to Chat-style assistant messages.
+    preserve_native_compaction: bool,
 }
 
 impl serde::Serialize for OutboundBody<'_> {
@@ -421,7 +444,7 @@ impl serde::Serialize for OutboundBody<'_> {
         } else {
             &self.state.messages
         };
-        let backend_messages = messages_for_backend(messages);
+        let backend_messages = messages_for_backend(messages, self.preserve_native_compaction);
         let mut map = serializer.serialize_map(None)?;
         let mut wrote_input = false;
         for (name, value) in object {
@@ -451,8 +474,14 @@ fn provider_owns_conversation(state: &ResponsesState) -> bool {
 }
 
 /// Serialize the outbound body without cloning request state.
-fn serialize_outbound_body(state: &ResponsesState) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(&OutboundBody { state })
+fn serialize_outbound_body(
+    state: &ResponsesState,
+    preserve_native_compaction: bool,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&OutboundBody {
+        state,
+        preserve_native_compaction,
+    })
 }
 
 /// Translate compaction items to backend-compatible messages.
@@ -461,7 +490,14 @@ fn serialize_outbound_body(state: &ResponsesState) -> Result<Vec<u8>, serde_json
 /// allocation. When compaction items exist, returns `Cow::Owned` with each
 /// `{"type": "compaction", "encrypted_content": "<base64>"}` translated to an assistant
 /// message — backends do not understand our internal compaction format.
-fn messages_for_backend(messages: &[serde_json::Value]) -> Cow<'_, [serde_json::Value]> {
+fn messages_for_backend(
+    messages: &[serde_json::Value],
+    preserve_native_compaction: bool,
+) -> Cow<'_, [serde_json::Value]> {
+    if preserve_native_compaction {
+        return Cow::Borrowed(messages);
+    }
+
     let mut translated: Option<Vec<serde_json::Value>> = None;
 
     for (i, m) in messages.iter().enumerate() {
@@ -500,7 +536,13 @@ fn compaction_to_assistant_message(m: &serde_json::Value) -> serde_json::Value {
 /// Count the exact bytes the proxy will serialize for an outbound body.
 pub(super) fn serialized_outbound_body_len(state: &ResponsesState) -> Result<usize, serde_json::Error> {
     let mut counter = ByteCounter::default();
-    serde_json::to_writer(&mut counter, &OutboundBody { state })?;
+    serde_json::to_writer(
+        &mut counter,
+        &OutboundBody {
+            state,
+            preserve_native_compaction: false,
+        },
+    )?;
     Ok(counter.bytes)
 }
 
