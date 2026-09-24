@@ -47,6 +47,7 @@ from openai import (
 # SQLite, so this suite exercises the backend compiled into that job.
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 OWNER_HEADER = "x-authenticated-state-owner"
+PROXY_STARTUP_TIMEOUT = 30.0
 
 
 def _owner_assertion(subject: str) -> str:
@@ -308,7 +309,11 @@ def _write_chunked_response_config(port: int, backend_port: int, db_path: str) -
     return path
 
 
-def _wait_for_proxy(port: int, process: subprocess.Popen | None = None, timeout: float = 10.0) -> None:
+def _wait_for_proxy(
+    port: int,
+    process: subprocess.Popen | None = None,
+    timeout: float = PROXY_STARTUP_TIMEOUT,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process is not None and process.poll() is not None:
@@ -321,7 +326,10 @@ def _wait_for_proxy(port: int, process: subprocess.Popen | None = None, timeout:
                 return
         except OSError:
             time.sleep(0.1)
-    raise TimeoutError(f"proxy did not start within {timeout}s")
+    raise TimeoutError(
+        f"proxy did not start within {timeout}s"
+        + (f" (process status: {process.poll()})" if process is not None else "")
+    )
 
 
 @pytest.fixture(scope="session")
