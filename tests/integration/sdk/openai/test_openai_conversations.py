@@ -42,6 +42,10 @@ from openai import (
     OpenAI,
 )
 
+# When set to a postgres:// URL (the vllm-responses-postgres CI job), the
+# conversations store runs against PostgreSQL instead of the default in-memory
+# SQLite, so this suite exercises the backend compiled into that job.
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 OWNER_HEADER = "x-authenticated-state-owner"
 
 
@@ -93,17 +97,32 @@ def _find_tenant_binary() -> str:
     )
 
 
-def _conversations_filter() -> dict:
-    """Build the isolated SQLite store used by the SDK compatibility suite."""
+def _conversations_filter(table_prefix: str) -> dict:
+    """Build the conversations store for the backend configured by CI."""
+    tables = {
+        "conversations_table": f"{table_prefix}_conversations",
+        "items_table": f"{table_prefix}_conversation_items",
+    }
+    if DATABASE_URL.startswith("postgres"):
+        store = {
+            "backend": "postgres",
+            "database_url": DATABASE_URL,
+            # Local CI postgres service is loopback + non-TLS.
+            "allow_private_database_url": True,
+            "ssl_mode": "disable",
+        }
+    else:
+        store = {
+            "backend": "sqlite",
+            "database_url": "sqlite::memory:",
+            # Every pooled SQLite in-memory connection is a distinct
+            # database, so keep this SDK suite on one connection.
+            "pool": {"max_connections": 1},
+        }
     return {
         "filter": "openai_conversations",
-        "backend": "sqlite",
-        "database_url": "sqlite::memory:",
-        "conversations_table": "conversations",
-        "items_table": "conversation_items",
-        # Every pooled SQLite in-memory connection is a distinct database, so
-        # keep this SDK suite on one connection.
-        "pool": {"max_connections": 1},
+        **store,
+        **tables,
     }
 
 
@@ -125,7 +144,7 @@ def _write_config(port: int) -> str:
                         "mode": "trusted_owner",
                         "header": OWNER_HEADER,
                     },
-                    _conversations_filter(),
+                    _conversations_filter(f"sdk_{port}"),
                 ],
             }
         ],
@@ -137,13 +156,7 @@ def _write_config(port: int) -> str:
 
 
 def _write_tenant_config(port: int) -> str:
-    conversations_filter = _conversations_filter()
-    conversations_filter.update(
-        {
-            "conversations_table": "tenant_test_conversations",
-            "items_table": "tenant_test_conversation_items",
-        }
-    )
+    conversations_filter = _conversations_filter(f"tenant_sdk_{port}")
     config = {
         "listeners": [
             {
@@ -214,30 +227,38 @@ class _ChunkedResponsesBackend(http.server.BaseHTTPRequestHandler):
         return
 
 
-def _chunked_response_store_filters(db_path: str) -> tuple[dict, dict]:
-    """Build matching SQLite filters for the listener-level regression test."""
+def _chunked_response_store_filters(db_path: str, port: int) -> tuple[dict, dict]:
+    """Build matching filters for the listener-level regression test."""
     tables = {
-        "conversations_table": "chunked_conversations",
-        "items_table": "chunked_conversation_items",
+        "conversations_table": f"chunked_{port}_conversations",
+        "items_table": f"chunked_{port}_conversation_items",
     }
-    store = {
-        "backend": "sqlite",
-        "database_url": f"sqlite://{db_path}?mode=rwc",
-        "pool": {"max_connections": 1},
-    }
+    if DATABASE_URL.startswith("postgres"):
+        store = {
+            "backend": "postgres",
+            "database_url": DATABASE_URL,
+            "allow_private_database_url": True,
+            "ssl_mode": "disable",
+        }
+    else:
+        store = {
+            "backend": "sqlite",
+            "database_url": f"sqlite://{db_path}?mode=rwc",
+            "pool": {"max_connections": 1},
+        }
 
     conversations = {"filter": "openai_conversations", **store, **tables}
     response_store = {
         "filter": "openai_response_store",
         **store,
-        "responses_table": "chunked_responses",
+        "responses_table": f"chunked_{port}_responses",
         "conversations_table": tables["conversations_table"],
     }
     return conversations, response_store
 
 
 def _write_chunked_response_config(port: int, backend_port: int, db_path: str) -> str:
-    conversations_filter, response_store_filter = _chunked_response_store_filters(db_path)
+    conversations_filter, response_store_filter = _chunked_response_store_filters(db_path, port)
     config = {
         "listeners": [
             {
@@ -310,10 +331,11 @@ def praxis_proxy():
     proc = subprocess.Popen(
         [binary, "-c", config_path],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
-        _wait_for_proxy(port)
+        _wait_for_proxy(port, proc)
         yield port
     finally:
         proc.send_signal(signal.SIGINT)
@@ -403,10 +425,11 @@ def tenant_praxis_proxy():
     proc = subprocess.Popen(
         [binary, "-c", config_path],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
-        _wait_for_proxy(port)
+        _wait_for_proxy(port, proc)
         yield port
     finally:
         proc.send_signal(signal.SIGINT)
