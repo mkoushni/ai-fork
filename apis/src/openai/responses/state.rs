@@ -25,9 +25,11 @@ use super::{bounded_json_size, error::responses_error_rejection, file_search_cal
 ///
 /// This field is stored only in the private rehydration history. The outbound
 /// serializer removes it before any item reaches a provider or client.
+#[cfg(feature = "store")]
 pub(crate) const LOCAL_COMPACTION_MARKER: &str = "_praxis_local_compaction";
 
 /// Mark a locally generated compaction item in private persisted history.
+#[cfg(feature = "openai-compact")]
 pub(crate) fn mark_local_compaction_item(item: &serde_json::Value) -> serde_json::Value {
     let mut marked = item.clone();
     if let Some(object) = marked.as_object_mut() {
@@ -40,6 +42,7 @@ pub(crate) fn mark_local_compaction_item(item: &serde_json::Value) -> serde_json
 ///
 /// The ID-prefix fallback keeps histories written before provenance metadata
 /// was introduced from being replayed as native provider state.
+#[cfg(feature = "store")]
 pub(crate) fn is_local_compaction_item(item: &serde_json::Value) -> bool {
     item.get(LOCAL_COMPACTION_MARKER)
         .and_then(serde_json::Value::as_bool)
@@ -51,6 +54,7 @@ pub(crate) fn is_local_compaction_item(item: &serde_json::Value) -> bool {
 }
 
 /// Remove private provenance metadata before replaying a stored item.
+#[cfg(feature = "store")]
 pub(crate) fn strip_local_compaction_marker(item: &serde_json::Value) -> serde_json::Value {
     let mut stripped = item.clone();
     if let Some(object) = stripped.as_object_mut() {
