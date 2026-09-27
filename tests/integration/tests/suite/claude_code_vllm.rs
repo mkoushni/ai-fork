@@ -18,8 +18,10 @@
 //! translation. The transformed path rewrites the Anthropic request into OpenAI
 //! Chat Completions (and the response back) via
 //! `anthropic_messages_to_chat_completions[_stream]`, so a Chat-Completions-only
-//! vLLM can serve the same client. One vLLM container serves both surfaces, so a
-//! single gated CI job runs both tests.
+//! vLLM can serve the same client. Each path runs once with deterministic
+//! `acceptEdits` permissions and once with client-initiated auto-mode
+//! classification, for four independent scenarios against one shared vLLM
+//! container.
 //!
 //! These tests assert only what a live end-to-end run uniquely proves: the real
 //! client completes the task through Praxis against a real backend. Wire
@@ -29,8 +31,8 @@
 //! `tests/integration/tests/suite/examples/anthropic_messages_native_vllm.rs`
 //! and `.../anthropic_messages_to_openai_vllm.rs`, not observed here.
 //!
-//! Both tests are gated on live infrastructure and skip unless every required
-//! variable is set. Run them locally with, e.g.:
+//! All four tests are gated on live infrastructure and skip unless every
+//! required variable is set. Run them locally with, e.g.:
 //!
 //! ```console
 //! PRAXIS_TEST_CLAUDE_CODE_BIN=/absolute/path/to/claude \
@@ -43,11 +45,11 @@
 //! #   claude_code_vllm::pinned_claude_code_drives_transformed_vllm_through_full_flow
 //! ```
 //!
-//! Pin discipline: [`CLAUDE_CODE_VERSION`] and [`LAUNCH_FLAGS`] are part of the
-//! committed pin manifest (`tests/integration/fixtures/claude-code-cli/`). They
-//! MUST be re-validated against the pinned executable during the qualification
-//! run described in that manifest before CI executes this test once. The served
-//! model, vLLM image digest, and startup request matrix are pinned there too.
+//! Pin discipline: [`CLAUDE_CODE_VERSION`], [`PermissionScenario`], and
+//! [`LAUNCH_FLAGS`] are part of the committed pin manifest
+//! (`tests/integration/fixtures/claude-code-cli/`). They MUST be re-validated
+//! against the pinned executable when its version changes. The served model,
+//! vLLM image digest, and startup request matrix are pinned there too.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -108,19 +110,117 @@ const LISTEN_ADDRESS_ENV: &str = "PRAXIS_TEST_LISTEN_ADDRESS";
 /// qualification run and update this constant and the manifest together.
 const CLAUDE_CODE_VERSION: &str = "2.1.278";
 
-/// Output-token ceiling passed to the pinned client for the 16K vLLM context.
+/// Output-token ceiling passed to the pinned client for the 32K vLLM context.
 ///
 /// Claude Code otherwise requests 32K output tokens, which vLLM correctly
-/// rejects before inference when the pinned model server has a 16K total
+/// rejects before inference when the pinned model server has a 32K total
 /// context. The coding task needs only short tool calls and a summary.
 const CLAUDE_CODE_MAX_OUTPUT_TOKENS: &str = "2048";
 
 /// Context window advertised to the pinned client for its compaction policy.
 ///
-/// The client otherwise compacts after each small tool result when this is set
-/// to the backend's 16K generation window. Actual requests remain bounded by
-/// vLLM's 16K limit and the separate 2K output cap.
+/// Keep this equal to the backend's 32K generation window. Auto-mode classifier
+/// calls reserve 2,112 output tokens independently of the main-request cap and
+/// include a large client-owned safety prompt, so a smaller backend window can
+/// reject them before inference.
 const CLAUDE_CODE_MAX_CONTEXT_TOKENS: &str = "32768";
+
+/// Claude Code switch between its server-side and client-initiated auto-mode
+/// classifier paths.
+const AUTO_MODE_SERVER_ENV: &str = "CLAUDE_CODE_AUTO_MODE_SERVER";
+
+/// Selects how the pinned client authorizes tool calls in one acceptance run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PermissionScenario {
+    /// Stable baseline: Claude Code applies its built-in `acceptEdits` mode and
+    /// receives an explicit allowlist for the deterministic workspace tools.
+    AcceptEdits,
+    /// Exercise Claude Code's auto-mode classifier through Praxis. Setting the
+    /// server toggle to `0` makes the client initiate classifier model requests;
+    /// Praxis and vLLM do not implement Anthropic's server-side classifier.
+    AutoClientClassifier,
+}
+
+impl PermissionScenario {
+    /// The value accepted by Claude Code's `--permission-mode` flag.
+    const fn cli_value(self) -> &'static str {
+        match self {
+            Self::AcceptEdits => "acceptEdits",
+            Self::AutoClientClassifier => "auto",
+        }
+    }
+
+    /// Adds the permission arguments for this scenario without changing the
+    /// common tool exposure configured by [`LAUNCH_FLAGS`].
+    fn configure_arguments(self, command: &mut tokio::process::Command) {
+        command.arg("--permission-mode").arg(self.cli_value());
+        if self == Self::AcceptEdits {
+            // Qwen may render the required verification as `./verify.sh`, invoke
+            // it through a shell, or compose it with an inspection command.
+            // Bash is the only shell tool exposed to this temporary,
+            // egress-isolated baseline workspace, so approve it without
+            // coupling the test to one command spelling.
+            command.arg("--allowedTools").arg("Read").arg("Edit").arg("Bash");
+        }
+    }
+
+    /// Applies scenario-specific environment after the command environment has
+    /// been cleared. Auto mode deliberately omits `--allowedTools`, so the Edit
+    /// and Bash calls cannot bypass classification through preapproval.
+    fn configure_environment(self, command: &mut tokio::process::Command) {
+        if self == Self::AutoClientClassifier {
+            command.env(AUTO_MODE_SERVER_ENV, "0");
+        }
+    }
+}
+
+#[test]
+fn permission_scenarios_keep_auto_mode_unapproved_and_client_classified() {
+    fn configured_command(scenario: PermissionScenario) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("claude");
+        command.env_clear();
+        scenario.configure_arguments(&mut command);
+        scenario.configure_environment(&mut command);
+        command
+    }
+
+    assert!(!LAUNCH_FLAGS.contains(&"--permission-mode"));
+    assert!(!LAUNCH_FLAGS.contains(&"--allowedTools"));
+
+    let baseline = configured_command(PermissionScenario::AcceptEdits);
+    let baseline_args = baseline
+        .as_std()
+        .get_args()
+        .map(|value| value.to_str().expect("test arguments should be UTF-8"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        baseline_args,
+        [
+            "--permission-mode",
+            "acceptEdits",
+            "--allowedTools",
+            "Read",
+            "Edit",
+            "Bash",
+        ]
+    );
+    assert!(baseline.as_std().get_envs().next().is_none());
+
+    let auto = configured_command(PermissionScenario::AutoClientClassifier);
+    let auto_args = auto
+        .as_std()
+        .get_args()
+        .map(|value| value.to_str().expect("test arguments should be UTF-8"))
+        .collect::<Vec<_>>();
+    assert_eq!(auto_args, ["--permission-mode", "auto"]);
+    assert_eq!(
+        auto.as_std()
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(AUTO_MODE_SERVER_ENV))
+            .and_then(|(_, value)| value),
+        Some(OsStr::new("0"))
+    );
+}
 
 /// The native-vLLM passthrough example config under test (no body translation).
 const CONFIG_NATIVE: &str = "anthropic/messages-native-vllm.yaml";
@@ -164,13 +264,11 @@ const CHILD_TIMEOUT: Duration = Duration::from_secs(180);
 ///
 /// PIN: these are the real print-mode headless flags accepted by the pinned
 /// executable. Restricting the available built-ins to the three tools the task
-/// exercises keeps unrelated tool schemas out of the prompt and makes the 16K
+/// exercises keeps unrelated tool schemas out of the prompt and makes the 32K
 /// context pin representative. Re-validate the full set below against the
 /// pinned executable during qualification and adjust here and in the manifest
 /// together.
 const LAUNCH_FLAGS: &[&str] = &[
-    "--permission-mode",
-    "acceptEdits",
     "--tools",
     "Read,Edit,Bash",
     "--strict-mcp-config",
@@ -192,7 +290,7 @@ async fn pinned_claude_code_drives_native_vllm_through_full_flow() {
     let Some(live) = LiveConfig::from_env() else {
         return;
     };
-    run_full_flow(&live, native_vllm_config).await;
+    run_full_flow(&live, native_vllm_config, PermissionScenario::AcceptEdits).await;
 }
 
 /// Prove the same client completes the same task through Praxis when Praxis
@@ -203,17 +301,39 @@ async fn pinned_claude_code_drives_transformed_vllm_through_full_flow() {
     let Some(live) = LiveConfig::from_env() else {
         return;
     };
-    run_full_flow(&live, transformed_vllm_config).await;
+    run_full_flow(&live, transformed_vllm_config, PermissionScenario::AcceptEdits).await;
+}
+
+/// Prove Claude Code's client-initiated auto-mode classifier can authorize the
+/// same task through the native Anthropic Messages path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_claude_code_auto_mode_drives_native_vllm_through_full_flow() {
+    let Some(live) = LiveConfig::from_env() else {
+        return;
+    };
+    run_full_flow(&live, native_vllm_config, PermissionScenario::AutoClientClassifier).await;
+}
+
+/// Prove Claude Code's client-initiated auto-mode classifier can authorize the
+/// same task through the translated Chat Completions path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_claude_code_auto_mode_drives_transformed_vllm_through_full_flow() {
+    let Some(live) = LiveConfig::from_env() else {
+        return;
+    };
+    run_full_flow(&live, transformed_vllm_config, PermissionScenario::AutoClientClassifier).await;
 }
 
 /// Drives the pinned client end to end through a Praxis config built by
 /// `build_config`, asserting the task completed against the real backend.
 ///
-/// Both acceptance paths (native passthrough and Chat Completions translation)
-/// share this flow; only the config filter chain differs. The client, task,
-/// egress-isolation enforcement, and outcome assertions are identical, so the
-/// two tests prove the same real-model behavior over the two wire bridges.
-async fn run_full_flow(live: &LiveConfig, build_config: fn(&LiveConfig, u16) -> Config) {
+/// Both acceptance paths and both permission scenarios share this flow; only
+/// the config filter chain and client permission setup differ.
+async fn run_full_flow(
+    live: &LiveConfig,
+    build_config: fn(&LiveConfig, u16) -> Config,
+    permission_scenario: PermissionScenario,
+) {
     assert_pinned_version(&live.claude_bin).await;
     live.require_egress_isolation_if_demanded();
 
@@ -241,7 +361,7 @@ async fn run_full_flow(live: &LiveConfig, build_config: fn(&LiveConfig, u16) -> 
 
     let workspace = Workspace::create();
     let started = SystemTime::now();
-    let output = launch_claude_code(live, &proxy_base_url, &workspace).await;
+    let output = launch_claude_code(live, &proxy_base_url, &workspace, permission_scenario).await;
 
     assert!(
         !output.timed_out,
@@ -307,7 +427,7 @@ impl LiveConfig {
                  is required"
             );
             eprintln!(
-                "skipping native-vLLM Claude Code acceptance test; set {CLAUDE_CODE_BIN_ENV}, \
+                "skipping Claude Code vLLM acceptance test; set {CLAUDE_CODE_BIN_ENV}, \
                  {VLLM_BASE_URL_ENV}, {VLLM_MODEL_ENV}, and {BACKEND_TOKEN_ENV} to run it"
             );
             return None;
@@ -641,7 +761,12 @@ fn random_token() -> String {
 // -----------------------------------------------------------------------------
 
 /// Runs the pinned Claude Code client with a cleared, pinned environment.
-async fn launch_claude_code(live: &LiveConfig, proxy_base_url: &str, workspace: &Workspace) -> CapturedChildOutput {
+async fn launch_claude_code(
+    live: &LiveConfig,
+    proxy_base_url: &str,
+    workspace: &Workspace,
+    permission_scenario: PermissionScenario,
+) -> CapturedChildOutput {
     let config_dir = tempfile::tempdir().expect("temporary CLAUDE_CONFIG_DIR should be created");
     let home_dir = tempfile::tempdir().expect("temporary HOME should be created");
     let mcp_config = config_dir.path().join("empty-mcp.json");
@@ -653,19 +778,11 @@ async fn launch_claude_code(live: &LiveConfig, proxy_base_url: &str, workspace: 
         .arg(PROMPT)
         .arg("--model")
         .arg(&live.model)
-        .arg("--allowedTools")
-        .arg("Read")
-        .arg("Edit")
-        // Qwen may render the required verification as `./verify.sh`, invoke it
-        // through a shell, or compose it with an inspection command. Claude
-        // Code's Bash permission rules are prefix matches, so enumerating exact
-        // spellings makes this real-model acceptance test nondeterministic. Bash
-        // is the only shell tool exposed by `--tools`, the project and HOME are
-        // temporary, and CI additionally runs the client without network egress.
-        .arg("Bash")
         .arg("--mcp-config")
         .arg(&mcp_config)
-        .args(LAUNCH_FLAGS)
+        .args(LAUNCH_FLAGS);
+    permission_scenario.configure_arguments(&mut command);
+    command
         .current_dir(workspace.project.path())
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -694,6 +811,7 @@ async fn launch_claude_code(live: &LiveConfig, proxy_base_url: &str, workspace: 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    permission_scenario.configure_environment(&mut command);
     configure_isolated_process_group(&mut command);
 
     let child = command.spawn().expect("pinned Claude Code should start");

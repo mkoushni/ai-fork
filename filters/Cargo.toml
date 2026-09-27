@@ -19,8 +19,10 @@ standard = ["aws-sigv4-filter", "policy-engine"]
 # The `policy` filter from Praxis core. Kept explicit so no-default FIPS builds
 # can omit the policy engine and its pure-Rust cryptography.
 policy-engine = ["praxis-filter/policy-engine"]
-# aws_sigv4_sign: AWS Signature V4 request signing (aws-sigv4).
-aws-sigv4-filter = ["dep:aws-sigv4", "dep:aws-credential-types"]
+# aws_sigv4_sign: AWS Signature V4 request signing. The signature is computed
+# over the system OpenSSL (praxis-ai-apis' hash seam); aws-sigv4 itself is a
+# dev-dependency, the oracle the signer is tested against.
+aws-sigv4-filter = ["dep:aws-credential-types"]
 # Backwards-compatible alias for the previous default, which built every
 # non-experimental filter.
 apis = ["full"]
@@ -52,7 +54,8 @@ gcp-adc-filter = ["experimental", "dep:reqwest"]
 # (00121_token-rate-limiting in praxis-proxy/enhancements) is not yet
 # `accepted`, and open design questions remain (bucket-keying strategy,
 # HA/clustered-Valkey failure modes, how this relates to Kuadrant's
-# TokenRateLimitPolicy) -- see ai#796. Activates the `experimental` marker.
+# TokenRateLimitPolicy) -- see ai#796. The bounded observability contract is
+# tracked by ai#883. Activates the `experimental` marker.
 # Also pulls in `redis` and `thiserror`, which only this filter uses --
 # optional so the rest of the crate (and its consumers) don't compile the
 # Valkey client and its transitive deps unless this feature is on.
@@ -74,7 +77,6 @@ workspace = true
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 aws-credential-types = { workspace = true, optional = true }
-aws-sigv4 = { workspace = true, optional = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -86,7 +88,7 @@ percent-encoding = { workspace = true }
 praxis-ai-apis = { workspace = true }
 praxis-core = { workspace = true }
 # chain-binding: ChainBindingContext for register.rs outbound-chain wiring.
-# Off-by-default experimental feature in praxis 0.6.0 (no extra dependencies).
+# Off-by-default experimental feature in praxis 0.7.0 (no extra dependencies).
 praxis-filter = { workspace = true, features = ["chain-binding"] }
 praxis-tls = { workspace = true }
 redis = { workspace = true, optional = true }
@@ -106,7 +108,11 @@ url = { workspace = true }
 zeroize = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+# The SigV4 reference implementation the OpenSSL-backed signer is checked
+# against (filters/src/aws/signing.rs); never linked into the binary.
+aws-sigv4 = { workspace = true }
 metrics-util = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }

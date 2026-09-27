@@ -44,14 +44,55 @@ model name. A keyed local server can be started with:
 export VLLM_API_KEY="$(openssl rand -hex 32)"
 vllm serve Qwen/Qwen3-8B \
   --served-model-name qwen3-8b \
-  --max-model-len 16384 \
+  --max-model-len 32768 \
   --enable-auto-tool-choice \
   --tool-call-parser hermes \
   --reasoning-parser deepseek_r1 \
+  --gpu-memory-utilization 0.97 \
+  --enforce-eager \
   --api-key "$VLLM_API_KEY"
 ```
 
-Use `VLLM_URL=http://127.0.0.1:8000` for that server.
+The same server can be run from the official
+[`vllm/vllm-openai`](https://hub.docker.com/r/vllm/vllm-openai) image. Its
+entrypoint already starts the server, so the arguments are the `vllm serve`
+flags used above, and vLLM reads the backend key from `VLLM_API_KEY` in the
+container environment instead of the command line:
+
+```console
+export VLLM_API_KEY="$(openssl rand -hex 32)"
+docker run --rm --name vllm \
+  --gpus all \
+  --ipc=host \
+  -p 8000:8000 \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  -e VLLM_API_KEY \
+  docker.io/vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-8B \
+  --served-model-name qwen3-8b \
+  --max-model-len 32768 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
+  --reasoning-parser deepseek_r1 \
+  --gpu-memory-utilization 0.97 \
+  --enforce-eager
+```
+
+With Podman, replace `--gpus all` with `--device nvidia.com/gpu=all` and leave
+the rest unchanged. Pin a released tag rather than `latest` for reproducible
+behavior; the on-demand GPU endpoint workflow uses `v0.29.0-cu129`. The first
+run downloads a multi-gigabyte image plus the model weights, and the Hugging
+Face cache mount keeps the weights for later runs.
+
+Use `VLLM_URL=http://127.0.0.1:8000` for either local server.
+
+The 32,768-token window is intentional for Claude Code auto mode. Its
+client-initiated safety classifier reserves 2,112 output tokens independently
+of the main Claude Code output-token setting and includes a large client-owned
+prompt; 16K and 18K servers reject later classifier turns before inference. On
+an A10G, eager execution reclaims CUDA-graph memory and the 0.97 utilization is
+reserved for this single-user development workload. If you lower the window or
+share the GPU, do not use auto mode unless the classifier request still fits.
 
 ## 2. Point a Praxis example at vLLM
 
@@ -166,13 +207,25 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL="$VLLM_MODEL"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$VLLM_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$VLLM_MODEL"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Required if you select Claude Code's auto permission mode with this backend.
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 
 claude --model "$VLLM_MODEL"
+# To exercise client-classified auto mode explicitly:
+# claude --permission-mode auto --model "$VLLM_MODEL"
 ```
 
 `GATEWAY_AUTH_PASSWORD` and `VLLM_API_KEY` must be present in the environment of
-the Praxis process. The other variables configure Claude Code. When finished,
-stop local Praxis and cancel the on-demand endpoint workflow:
+the Praxis process. The other variables configure Claude Code.
+
+Praxis and vLLM do not implement Anthropic's server-side auto-mode classifier
+protocol. `CLAUDE_CODE_AUTO_MODE_SERVER=0` makes Claude Code initiate the
+classifier model requests through Praxis instead. This setting only affects
+Claude Code's `auto` permission mode; the classifier still consumes model
+inference and is not an on-device check. Do not set it to `1` for this setup.
+See [Anthropic's auto-mode classifier documentation](https://code.claude.com/docs/en/auto-mode-classifier-billing).
+
+When finished, stop local Praxis and cancel the on-demand endpoint workflow:
 
 ```console
 kill "$PRAXIS_PID"
