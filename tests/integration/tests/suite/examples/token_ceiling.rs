@@ -38,6 +38,29 @@ fn example_config_enforces_output_token_ceiling() {
         "accepted request should reach the backend"
     );
 
+    let oversized_prompt = "token ".repeat(5_000);
+    let rejected_input = http_send(
+        proxy.addr(),
+        &json_post(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": oversized_prompt}],
+                "max_tokens": 32,
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(
+        parse_status(&rejected_input),
+        400,
+        "request over the input ceiling should be rejected"
+    );
+    assert!(
+        parse_body(&rejected_input).contains("max_input_tokens_exceeded"),
+        "input rejection should identify the input ceiling error"
+    );
+
     let rejected = http_send(
         proxy.addr(),
         &json_post(

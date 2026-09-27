@@ -26,12 +26,18 @@ const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TokenCeilingConfig {
+    /// Maximum number of tokens in the serialized provider-bound JSON body.
+    /// This includes JSON keys, model/tool schemas, and non-text data.
     #[serde(default)]
     max_input_tokens: Option<u64>,
+    /// Maximum requested output tokens. The request must contain exactly one
+    /// of `max_output_tokens`, `max_completion_tokens`, or `max_tokens`.
     #[serde(default)]
     max_output_tokens: Option<u64>,
+    /// Tiktoken encoding used for the serialized request-body estimate.
     #[serde(default)]
     tokenizer: Tokenizer,
+    /// Maximum request-body bytes buffered for validation. Defaults to 2 MiB.
     #[serde(default = "default_max_body_bytes")]
     max_body_bytes: usize,
 }
@@ -49,6 +55,18 @@ enum Tokenizer {
 }
 
 impl Tokenizer {
+    /// Eagerly load the selected BPE vocabulary during pipeline construction.
+    fn initialize(self) {
+        match self {
+            Self::Cl100kBase => {
+                let _ = tiktoken_rs::cl100k_base_singleton();
+            },
+            Self::O200kBase => {
+                let _ = tiktoken_rs::o200k_base_singleton();
+            },
+        }
+    }
+
     fn count(self, text: &str) -> usize {
         match self {
             Self::Cl100kBase => tiktoken_rs::cl100k_base_singleton().count_ordinary(text),
@@ -57,10 +75,22 @@ impl Tokenizer {
     }
 }
 
-/// Rejects provider-bound requests whose estimated prompt or requested output
-/// exceeds configured limits. Missing output-limit fields are rejected when
-/// `max_output_tokens` is configured; this strict behavior prevents providers
-/// from applying an unbounded model default.
+/// Rejects provider-bound requests whose estimated serialized request body or
+/// requested output exceeds configured limits. Missing output-limit fields are
+/// rejected when `max_output_tokens` is configured; this strict behavior
+/// prevents providers from applying an unbounded model default. At least one
+/// of `max_input_tokens` or `max_output_tokens` is required, and
+/// `max_body_bytes` defaults to 2 MiB.
+///
+/// # YAML
+///
+/// ```yaml
+/// filter: token_ceiling
+/// max_input_tokens: 4000
+/// max_output_tokens: 1024
+/// tokenizer: cl100k_base
+/// max_body_bytes: 2097152
+/// ```
 pub struct TokenCeilingFilter {
     max_input_tokens: Option<u64>,
     max_output_tokens: Option<u64>,
@@ -86,6 +116,7 @@ impl TokenCeilingFilter {
         if cfg.max_body_bytes == 0 {
             return Err("token_ceiling: max_body_bytes must be greater than zero".into());
         }
+        cfg.tokenizer.initialize();
         Ok(Box::new(Self {
             max_input_tokens: cfg.max_input_tokens,
             max_output_tokens: cfg.max_output_tokens,
@@ -143,12 +174,8 @@ impl HttpFilter for TokenCeilingFilter {
             return Ok(FilterAction::Continue);
         }
 
-        let Some(raw) = body.as_ref() else {
-            return Ok(Self::rejection(
-                "missing_request_body",
-                "token ceiling requires a JSON request body".to_owned(),
-                400,
-            ));
+        let Some(raw) = body.as_ref().filter(|raw| !raw.is_empty()) else {
+            return Ok(FilterAction::Continue);
         };
         let value: serde_json::Value = match serde_json::from_slice(raw) {
             Ok(value) => value,
@@ -162,14 +189,29 @@ impl HttpFilter for TokenCeilingFilter {
         };
 
         if let Some(limit) = self.max_output_tokens {
-            let requested = value
-                .get("max_output_tokens")
-                .or_else(|| value.get("max_completion_tokens"))
-                .or_else(|| value.get("max_tokens"));
-            let Some(requested) = requested.and_then(serde_json::Value::as_u64) else {
+            let present = ["max_output_tokens", "max_completion_tokens", "max_tokens"]
+                .into_iter()
+                .filter_map(|name| value.get(name).map(|value| (name, value)))
+                .collect::<Vec<_>>();
+            if present.len() > 1 {
+                let fields = present.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(", ");
+                return Ok(Self::rejection(
+                    "multiple_output_limits",
+                    format!("request must specify only one output token limit; found {fields}"),
+                    400,
+                ));
+            }
+            let Some((field, requested)) = present.into_iter().next() else {
                 return Ok(Self::rejection(
                     "missing_output_limit",
                     format!("request must specify an output token limit no greater than {limit}"),
+                    400,
+                ));
+            };
+            let Some(requested) = requested.as_u64() else {
+                return Ok(Self::rejection(
+                    "invalid_output_limit",
+                    format!("{field} must be a non-negative integer no greater than {limit}"),
                     400,
                 ));
             };
@@ -186,7 +228,18 @@ impl HttpFilter for TokenCeilingFilter {
             let serialized = serde_json::to_string(&value).map_err(|error| -> FilterError {
                 format!("token_ceiling: failed to serialize request: {error}").into()
             })?;
-            let estimated = self.tokenizer.count(&serialized) as u64;
+            // Every token occupies at least one UTF-8 byte, so a body no
+            // larger than the token ceiling cannot exceed it after encoding.
+            let estimated = if serialized.len() as u64 <= limit {
+                serialized.len() as u64
+            } else {
+                let tokenizer = self.tokenizer;
+                tokio::task::spawn_blocking(move || tokenizer.count(&serialized) as u64)
+                    .await
+                    .map_err(|error| -> FilterError {
+                        format!("token_ceiling: tokenization task failed: {error}").into()
+                    })?
+            };
             if estimated > limit {
                 return Ok(Self::rejection(
                     "max_input_tokens_exceeded",
@@ -215,35 +268,99 @@ mod tests {
         TokenCeilingFilter::from_config(&value).unwrap()
     }
 
-    #[tokio::test]
-    async fn rejects_missing_output_limit() {
-        let filter = filter("max_output_tokens: 10");
+    async fn action(yaml: &str, body: Option<Bytes>) -> FilterAction {
+        let filter = filter(yaml);
         let request = make_request(Method::POST, "/v1/chat/completions");
         let mut ctx = make_filter_context(&request);
-        let mut body = Some(Bytes::from_static(br#"{"messages":[]}"#));
-        let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+        let mut body = body;
+        filter.on_request_body(&mut ctx, &mut body, true).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_output_limit() {
+        let action = action("max_output_tokens: 10", Some(Bytes::from_static(br#"{"messages":[]}"#))).await;
         assert!(matches!(action, FilterAction::Reject(_)));
     }
 
     #[tokio::test]
     async fn rejects_requested_output_above_limit() {
-        let filter = filter("max_output_tokens: 10");
-        let request = make_request(Method::POST, "/v1/chat/completions");
-        let mut ctx = make_filter_context(&request);
-        let mut body = Some(Bytes::from_static(br#"{"max_tokens":11}"#));
-        let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+        let action = action(
+            "max_output_tokens: 10",
+            Some(Bytes::from_static(br#"{"max_tokens":11}"#)),
+        )
+        .await;
         assert!(matches!(action, FilterAction::Reject(_)));
     }
 
     #[tokio::test]
     async fn accepts_request_within_both_limits() {
-        let filter = filter("max_input_tokens: 100\nmax_output_tokens: 10");
-        let request = make_request(Method::POST, "/v1/chat/completions");
-        let mut ctx = make_filter_context(&request);
-        let mut body = Some(Bytes::from_static(
-            br#"{"max_tokens":10,"messages":[{"role":"user","content":"hi"}]}"#,
-        ));
-        let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+        let action = action(
+            "max_input_tokens: 100\nmax_output_tokens: 10",
+            Some(Bytes::from_static(
+                br#"{"max_tokens":10,"messages":[{"role":"user","content":"hi"}]}"#,
+            )),
+        )
+        .await;
         assert!(matches!(action, FilterAction::Continue));
+    }
+
+    #[tokio::test]
+    async fn bodyless_requests_are_not_applicable() {
+        for body in [None, Some(Bytes::new())] {
+            let action = action("max_input_tokens: 10", body).await;
+            assert!(matches!(action, FilterAction::Continue));
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_serialized_request_over_input_limit() {
+        let action = action("max_input_tokens: 1", Some(Bytes::from_static(br#"{"messages":[]}"#))).await;
+        assert!(matches!(action, FilterAction::Reject(_)));
+    }
+
+    #[tokio::test]
+    async fn accepts_each_supported_output_limit_field() {
+        for field in ["max_output_tokens", "max_completion_tokens", "max_tokens"] {
+            let body = Bytes::from(format!(r#"{{"{field}":10}}"#));
+            let action = action("max_output_tokens: 10", Some(body)).await;
+            assert!(matches!(action, FilterAction::Continue), "field={field}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_multiple_output_limit_fields() {
+        let action = action(
+            "max_output_tokens: 10",
+            Some(Bytes::from_static(br#"{"max_tokens":10,"max_output_tokens":1}"#)),
+        )
+        .await;
+        assert!(matches!(action, FilterAction::Reject(_)));
+    }
+
+    #[tokio::test]
+    async fn accepts_o200k_tokenizer() {
+        let action = action(
+            "max_input_tokens: 10\ntokenizer: o200k_base",
+            Some(Bytes::from_static(br#"{"input":"hello world"}"#)),
+        )
+        .await;
+        assert!(matches!(action, FilterAction::Continue));
+    }
+
+    #[test]
+    fn rejects_invalid_configuration() {
+        for (yaml, expected) in [
+            ("{}", "at least one"),
+            ("max_input_tokens: 0", "token limits"),
+            ("max_output_tokens: 0", "token limits"),
+            ("max_input_tokens: 1\nmax_body_bytes: 0", "max_body_bytes"),
+            ("max_input_tokens: 1\nunknown: true", "unknown field"),
+        ] {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let Err(error) = TokenCeilingFilter::from_config(&value) else {
+                panic!("configuration should be rejected: {yaml}");
+            };
+            assert!(error.to_string().contains(expected), "yaml={yaml}");
+        }
     }
 }
