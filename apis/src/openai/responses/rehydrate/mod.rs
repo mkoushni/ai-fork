@@ -45,8 +45,11 @@ use tracing::{debug, trace, warn};
 #[cfg(feature = "openai-mcp-tools")]
 use super::mcp_dispatch::{OWNER_FINGERPRINT, owner_fingerprint};
 use super::{
-    DEFAULT_STORE_NAME, append_stored_input_items, bound_body_outcome, canonical_openresponses_replay_item,
-    error::responses_error_rejection, extract_conversation_id, state::ResponsesState,
+    DEFAULT_STORE_NAME, append_stored_input_items, canonical_openresponses_replay_item,
+    bound_body_outcome,
+    error::responses_error_rejection,
+    extract_conversation_id,
+    state::{ResponsesState, is_local_compaction_item, strip_local_compaction_marker},
 };
 use crate::{
     is_event_stream_content_type,
@@ -1215,10 +1218,12 @@ fn build_state(
     previous_usage: Option<Value>,
 ) -> ResponsesState {
     let replay = replay_messages_from_stored(&stored);
+    let provider_compaction_ids = provider_compaction_ids(&stored);
     let mut state = ResponsesState::from_request_body(parsed_body);
     state.history_rehydrated = true;
     state.messages.splice(0..0, replay);
     state.persisted_messages.splice(0..0, stored);
+    state.provider_compaction_ids = provider_compaction_ids;
     state.previous_tools = previous_tools;
     state.previous_usage = previous_usage;
     state
@@ -1253,7 +1258,26 @@ fn append_stored_output_items(messages: &mut Vec<Value>, output: Value) {
 
 /// Return stored items that should be replayed as backend request input.
 fn replay_messages_from_stored(stored: &[Value]) -> Vec<Value> {
-    stored.iter().filter_map(canonical_openresponses_replay_item).collect()
+    stored
+        .iter()
+        .filter_map(canonical_openresponses_replay_item)
+        .map(|item| strip_local_compaction_marker(&item))
+        .collect()
+}
+
+/// Collect provider-owned compaction IDs from persisted history.
+///
+/// Praxis-generated compaction items carry private provenance metadata in the
+/// store. Only unmarked compaction items are eligible for native replay.
+fn provider_compaction_ids(stored: &[Value]) -> HashSet<String> {
+    stored
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(Value::as_str) == Some("compaction") && !is_local_compaction_item(item)
+        })
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 /// Parse the request body and extract `previous_response_id`.

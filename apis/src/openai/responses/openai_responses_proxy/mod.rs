@@ -34,7 +34,7 @@ mod config;
 )]
 mod tests;
 
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, collections::HashSet, fmt};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -425,6 +425,8 @@ struct OutboundBody<'a> {
     /// Preserve provider-native compaction items instead of translating them
     /// to Chat-style assistant messages.
     preserve_native_compaction: bool,
+    /// IDs of compaction items known to have come from a provider response.
+    provider_compaction_ids: &'a HashSet<String>,
 }
 
 impl serde::Serialize for OutboundBody<'_> {
@@ -444,7 +446,8 @@ impl serde::Serialize for OutboundBody<'_> {
         } else {
             &self.state.messages
         };
-        let backend_messages = messages_for_backend(messages, self.preserve_native_compaction);
+        let backend_messages =
+            messages_for_backend(messages, self.preserve_native_compaction, self.provider_compaction_ids);
         let mut map = serializer.serialize_map(None)?;
         let mut wrote_input = false;
         for (name, value) in object {
@@ -481,27 +484,30 @@ fn serialize_outbound_body(
     serde_json::to_vec(&OutboundBody {
         state,
         preserve_native_compaction,
+        provider_compaction_ids: &state.provider_compaction_ids,
     })
 }
 
-/// Translate compaction items to backend-compatible messages.
+/// Project compaction items into the selected backend's input format.
 ///
 /// Returns `Cow::Borrowed` when no compaction items are present, avoiding
-/// allocation. When compaction items exist, returns `Cow::Owned` with each
-/// `{"type": "compaction", "encrypted_content": "<base64>"}` translated to an assistant
-/// message — backends do not understand our internal compaction format.
-fn messages_for_backend(
-    messages: &[serde_json::Value],
+/// allocation. Native mode borrows only provider-originated compaction items;
+/// locally generated Praxis summaries are still translated to assistant
+/// messages because they are not opaque provider state.
+fn messages_for_backend<'a>(
+    messages: &'a [serde_json::Value],
     preserve_native_compaction: bool,
-) -> Cow<'_, [serde_json::Value]> {
-    if preserve_native_compaction {
-        return Cow::Borrowed(messages);
-    }
-
+    provider_compaction_ids: &HashSet<String>,
+) -> Cow<'a, [serde_json::Value]> {
     let mut translated: Option<Vec<serde_json::Value>> = None;
 
     for (i, m) in messages.iter().enumerate() {
-        if m.get("type").and_then(serde_json::Value::as_str) == Some("compaction") {
+        let is_provider_compaction = preserve_native_compaction
+            && m.get("type").and_then(serde_json::Value::as_str) == Some("compaction")
+            && m.get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| provider_compaction_ids.contains(id));
+        if m.get("type").and_then(serde_json::Value::as_str) == Some("compaction") && !is_provider_compaction {
             let vec = translated.get_or_insert_with(|| messages.get(..i).unwrap_or(&[]).to_vec());
             vec.push(compaction_to_assistant_message(m));
         } else if let Some(vec) = &mut translated {
@@ -533,14 +539,30 @@ fn compaction_to_assistant_message(m: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// Count the exact bytes the proxy will serialize for an outbound body.
+/// Count the exact serialized bytes for both outbound compaction projections.
+///
+/// The selected provider is not known when pre-selection rewrite filters
+/// enforce their configured cap. Measuring both the native and translated
+/// forms prevents the smaller translated assistant placeholder from masking a
+/// larger opaque provider item that the selected-upstream hook will preserve.
 pub(super) fn serialized_outbound_body_len(state: &ResponsesState) -> Result<usize, serde_json::Error> {
+    let translated = serialized_outbound_body_len_for(state, false)?;
+    let native = serialized_outbound_body_len_for(state, true)?;
+    Ok(translated.max(native))
+}
+
+/// Count one concrete outbound projection without allocating the body.
+fn serialized_outbound_body_len_for(
+    state: &ResponsesState,
+    preserve_native_compaction: bool,
+) -> Result<usize, serde_json::Error> {
     let mut counter = ByteCounter::default();
     serde_json::to_writer(
         &mut counter,
         &OutboundBody {
             state,
-            preserve_native_compaction: false,
+            preserve_native_compaction,
+            provider_compaction_ids: &state.provider_compaction_ids,
         },
     )?;
     Ok(counter.bytes)

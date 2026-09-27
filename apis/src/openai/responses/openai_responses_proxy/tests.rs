@@ -543,20 +543,26 @@ async fn native_openai_backend_preserves_provider_compaction_in_rebuilt_state() 
             "content": "continue"
         }),
     ];
+    state.provider_compaction_ids.insert("cmp_provider".to_owned());
     ctx.extensions.insert(state);
     let mut body = Some(Bytes::from_static(
         br#"{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":"continue"}],"previous_response_id":"resp_provider"}"#,
     ));
 
+    let body_action = pipeline
+        .execute_http_request_body(&mut ctx, &mut body, true)
+        .await
+        .unwrap();
+    assert!(matches!(body_action, FilterAction::Continue));
     assert!(matches!(
         pipeline.execute_http_request(&mut ctx).await.unwrap(),
         FilterAction::Continue
     ));
-    let action = pipeline
-        .execute_http_request_body(&mut ctx, &mut body, true)
+    let selected_action = pipeline
+        .execute_http_selected_upstream_request_body(&mut ctx, &mut body)
         .await
         .unwrap();
-    assert!(matches!(action, FilterAction::Continue));
+    assert!(matches!(selected_action, FilterAction::Continue));
 
     let rebuilt: serde_json::Value = serde_json::from_slice(body.as_deref().unwrap()).unwrap();
     assert_eq!(rebuilt["input"][0], provider_compaction);
@@ -915,6 +921,31 @@ async fn rejects_oversized_rebuilt_body_with_413() {
     );
 }
 
+#[test]
+fn serialized_body_cap_uses_conservative_native_projection() {
+    let opaque_state = "opaque-provider-state".repeat(512);
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": "continue",
+        "previous_response_id": "resp_provider"
+    }));
+    state.history_rehydrated = true;
+    state.messages = vec![json!({
+        "type": "compaction",
+        "id": "cmp_provider",
+        "encrypted_content": opaque_state
+    })];
+    state.provider_compaction_ids.insert("cmp_provider".to_owned());
+
+    let translated = super::serialize_outbound_body(&state, false).unwrap().len();
+    let native = super::serialize_outbound_body(&state, true).unwrap().len();
+    assert!(
+        native > translated,
+        "native opaque state should exceed translated summary size"
+    );
+    assert_eq!(super::serialized_outbound_body_len(&state).unwrap(), native);
+}
+
 #[tokio::test]
 async fn strips_conversation_from_outbound_body() {
     let filter = make_filter();
@@ -1214,7 +1245,7 @@ fn messages_for_backend_borrows_when_no_compaction() {
         json!({"role": "user", "content": "hello"}),
         json!({"role": "assistant", "content": "hi"}),
     ];
-    let result = super::messages_for_backend(&msgs, false);
+    let result = super::messages_for_backend(&msgs, false, &std::collections::HashSet::new());
     assert!(
         matches!(result, std::borrow::Cow::Borrowed(_)),
         "should borrow when no compaction items"
@@ -1226,7 +1257,7 @@ fn messages_for_backend_borrows_when_no_compaction() {
 fn messages_for_backend_translates_compaction_item() {
     let encoded = base64::engine::general_purpose::STANDARD.encode("summary text");
     let msgs = vec![json!({"type": "compaction", "id": "c_1", "encrypted_content": encoded})];
-    let result = super::messages_for_backend(&msgs, false);
+    let result = super::messages_for_backend(&msgs, false, &std::collections::HashSet::new());
     assert!(
         matches!(result, std::borrow::Cow::Owned(_)),
         "summary insertion must return an owned input array"
@@ -1246,7 +1277,7 @@ fn messages_for_backend_mixed_items() {
         json!({"type": "compaction", "id": "c_1", "encrypted_content": encoded}),
         json!({"role": "user", "content": "hello"}),
     ];
-    let result = super::messages_for_backend(&msgs, false);
+    let result = super::messages_for_backend(&msgs, false, &std::collections::HashSet::new());
     assert_eq!(result.len(), 2);
     assert_eq!(result[0]["role"], "assistant");
     assert_eq!(result[1]["role"], "user");
@@ -1261,7 +1292,8 @@ fn messages_for_native_backend_preserves_provider_compaction_item() {
         "provider_field": {"opaque": true}
     });
     let msgs = vec![item.clone(), json!({"role": "user", "content": "continue"})];
-    let result = super::messages_for_backend(&msgs, true);
+    let provider_ids = std::collections::HashSet::from(["cmp_provider".to_owned()]);
+    let result = super::messages_for_backend(&msgs, true, &provider_ids);
 
     assert!(
         matches!(result, std::borrow::Cow::Borrowed(_)),
@@ -1271,6 +1303,20 @@ fn messages_for_native_backend_preserves_provider_compaction_item() {
         result[0], item,
         "provider compaction state must remain byte-equivalent as JSON"
     );
+}
+
+#[test]
+fn messages_for_native_backend_translates_local_compaction_item() {
+    let encoded = base64::engine::general_purpose::STANDARD.encode("local summary");
+    let msgs = vec![json!({
+        "type": "compaction",
+        "id": "compact_local",
+        "encrypted_content": encoded
+    })];
+    let result = super::messages_for_backend(&msgs, true, &std::collections::HashSet::new());
+
+    assert_eq!(result[0]["role"], "assistant");
+    assert_eq!(result[0]["content"], "[Previous conversation summary]\n\nlocal summary");
 }
 
 #[tokio::test]
