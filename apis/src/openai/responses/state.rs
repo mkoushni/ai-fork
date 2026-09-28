@@ -55,12 +55,11 @@ pub(crate) fn is_local_compaction_item(item: &serde_json::Value) -> bool {
 
 /// Remove private provenance metadata before replaying a stored item.
 #[cfg(feature = "store")]
-pub(crate) fn strip_local_compaction_marker(item: &serde_json::Value) -> serde_json::Value {
-    let mut stripped = item.clone();
-    if let Some(object) = stripped.as_object_mut() {
+pub(crate) fn strip_local_compaction_marker(mut item: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = item.as_object_mut() {
         object.remove(LOCAL_COMPACTION_MARKER);
     }
-    stripped
+    item
 }
 
 /// Maximum citation file mappings retained during one response execution.

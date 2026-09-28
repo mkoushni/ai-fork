@@ -1261,7 +1261,7 @@ fn replay_messages_from_stored(stored: &[Value]) -> Vec<Value> {
     stored
         .iter()
         .filter_map(canonical_openresponses_replay_item)
-        .map(|item| strip_local_compaction_marker(&item))
+        .map(strip_local_compaction_marker)
         .collect()
 }
 

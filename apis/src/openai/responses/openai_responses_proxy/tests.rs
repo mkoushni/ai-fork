@@ -554,6 +554,9 @@ async fn native_openai_backend_preserves_provider_compaction_in_rebuilt_state() 
         .await
         .unwrap();
     assert!(matches!(body_action, FilterAction::Continue));
+    let mut downstream_body: serde_json::Value = serde_json::from_slice(body.as_deref().unwrap()).unwrap();
+    downstream_body["model"] = json!("rewritten-model");
+    body = Some(Bytes::from(serde_json::to_vec(&downstream_body).unwrap()));
     assert!(matches!(
         pipeline.execute_http_request(&mut ctx).await.unwrap(),
         FilterAction::Continue
@@ -565,6 +568,10 @@ async fn native_openai_backend_preserves_provider_compaction_in_rebuilt_state() 
     assert!(matches!(selected_action, FilterAction::Continue));
 
     let rebuilt: serde_json::Value = serde_json::from_slice(body.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        rebuilt["model"], "rewritten-model",
+        "selected serialization must retain downstream body changes"
+    );
     assert_eq!(rebuilt["input"][0], provider_compaction);
     assert_eq!(rebuilt["input"][1]["content"], "continue");
     assert!(rebuilt.get("previous_response_id").is_none());

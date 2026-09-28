@@ -154,13 +154,9 @@ impl ResponsesProxyFilter {
     /// Serialize the rebuilt body from conversation state.
     fn serialize_body(
         &self,
-        ctx: &HttpFilterContext<'_>,
         state: &ResponsesState,
+        preserve_native_compaction: bool,
     ) -> Result<Result<Vec<u8>, FilterAction>, FilterError> {
-        let preserve_native_compaction = ctx
-            .extensions
-            .get::<NativeOpenaiResponsesUpstream>()
-            .is_some_and(|capability| capability.0);
         let serialized = serialize_outbound_body(state, preserve_native_compaction)
             .map_err(|e| -> FilterError { format!("openai_responses_proxy: {e}").into() })?;
         if serialized.len() > self.config.max_rewritten_body_bytes {
@@ -181,6 +177,47 @@ impl ResponsesProxyFilter {
             "rebuilt request body from ResponsesState"
         );
 
+        Ok(Ok(serialized))
+    }
+
+    /// Reconcile the selected backend's compaction projection with the body
+    /// produced by the earlier request-body phase.
+    ///
+    /// The selected-upstream phase runs after other request-body filters. Use
+    /// that live body as the source so downstream changes, such as a model
+    /// rewrite, are retained instead of rebuilding from the older
+    /// [`ResponsesState`] snapshot.
+    fn serialize_selected_body(
+        &self,
+        body: &Bytes,
+        state: &ResponsesState,
+    ) -> Result<Result<Vec<u8>, FilterAction>, FilterError> {
+        let mut outbound: serde_json::Value = serde_json::from_slice(body).map_err(|e| -> FilterError {
+            format!("openai_responses_proxy: invalid selected request body: {e}").into()
+        })?;
+
+        if let Some(object) = outbound.as_object_mut() {
+            if state.history_rehydrated {
+                object.remove("previous_response_id");
+                object.remove("conversation");
+            }
+
+            if let Some(items) = object.get("input").and_then(serde_json::Value::as_array) {
+                let projected = messages_for_backend(items, false, &state.provider_compaction_ids);
+                if let Cow::Owned(items) = projected {
+                    object.insert("input".to_owned(), serde_json::Value::Array(items));
+                }
+            }
+        }
+
+        let serialized = serde_json::to_vec(&outbound)
+            .map_err(|e| -> FilterError { format!("openai_responses_proxy: {e}").into() })?;
+        if serialized.len() > self.config.max_rewritten_body_bytes {
+            return Ok(Err(reject_rewritten_body_too_large(
+                serialized.len(),
+                self.config.max_rewritten_body_bytes,
+            )));
+        }
         Ok(Ok(serialized))
     }
 }
@@ -216,6 +253,36 @@ impl HttpFilter for ResponsesProxyFilter {
         Ok(FilterAction::Continue)
     }
 
+    async fn on_request_body(
+        &self,
+        ctx: &mut HttpFilterContext<'_>,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+    ) -> Result<FilterAction, FilterError> {
+        if !end_of_stream {
+            trace!("buffering request body chunk");
+            return Ok(FilterAction::Continue);
+        }
+
+        let Some(state) = ctx.extensions.get::<ResponsesState>() else {
+            select_terminal_response_mode(ctx, body);
+            return Ok(FilterAction::Continue);
+        };
+
+        if !request_needs_rebuild(state) {
+            select_terminal_response_mode(ctx, body);
+            return Ok(FilterAction::Continue);
+        }
+
+        let serialized = match self.serialize_body(state, true)? {
+            Ok(bytes) => bytes,
+            Err(action) => return Ok(action),
+        };
+        SerializedJson::from_bytes(serialized).commit(body, self.name(), "body");
+        select_terminal_response_mode(ctx, body);
+        Ok(FilterAction::Continue)
+    }
+
     async fn on_selected_upstream_request_body(
         &self,
         ctx: &mut HttpFilterContext<'_>,
@@ -226,6 +293,7 @@ impl HttpFilter for ResponsesProxyFilter {
         if let Some(action) = Self::reject_prompt_for_non_openai_upstream(ctx, body) {
             return Ok(action);
         }
+        let preserve_native_compaction = is_openai_responses_provider(ctx);
         let Some(state) = ctx.extensions.get::<ResponsesState>() else {
             select_terminal_response_mode(ctx, body);
             if let Some(rejection) = enforce_agentic_stream_guard(ctx) {
@@ -244,7 +312,18 @@ impl HttpFilter for ResponsesProxyFilter {
             return Ok(SelectedUpstreamBodyOutcome::Continue);
         }
 
-        let serialized = match self.serialize_body(ctx, state)? {
+        // The pre-selection body already carries the provider-native
+        // projection. Leave it intact for a native OpenAI Responses backend;
+        // reserializing here would both allocate unnecessarily and risk
+        // replacing changes made by later body filters.
+        if preserve_native_compaction {
+            return Ok(SelectedUpstreamBodyOutcome::Continue);
+        }
+
+        let Some(current_body) = body.as_ref() else {
+            return Ok(SelectedUpstreamBodyOutcome::Continue);
+        };
+        let serialized = match self.serialize_selected_body(current_body, state)? {
             Ok(bytes) => bytes,
             Err(FilterAction::Reject(rejection)) => return Ok(SelectedUpstreamBodyOutcome::Reject(rejection)),
             Err(_) => return Err("openai_responses_proxy: invalid selected-upstream body outcome".into()),
