@@ -41,7 +41,7 @@ use base64::Engine as _;
 use bytes::Bytes;
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, SelectedUpstreamBodyOutcome,
-    SubRequestResponseMode, body::MAX_JSON_BODY_BYTES, parse_filter_config,
+    SubRequestResponseMode, parse_filter_config,
 };
 use serde::{
     Deserialize, Deserializer,
@@ -187,31 +187,74 @@ impl ResponsesProxyFilter {
     /// that live body as the source so downstream changes, such as a model
     /// rewrite, are retained instead of rebuilding from the older
     /// [`ResponsesState`] snapshot.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "streaming splice keeps the large body out of serde_json::Value"
+    )]
     fn serialize_selected_body(
         &self,
         body: &Bytes,
         state: &ResponsesState,
+        preserve_native_compaction: bool,
     ) -> Result<Result<Vec<u8>, FilterAction>, FilterError> {
-        let mut outbound: serde_json::Value = serde_json::from_slice(body).map_err(|e| -> FilterError {
-            format!("openai_responses_proxy: invalid selected request body: {e}").into()
+        let members = scan_top_level_object(body).map_err(|error| -> FilterError {
+            format!("openai_responses_proxy: invalid selected request body: {error}").into()
         })?;
+        let messages = if provider_owns_conversation(state) && state.iteration > 0 {
+            state.messages.get(state.provider_history_len..).unwrap_or_default()
+        } else {
+            &state.messages
+        };
+        let input_replacement = serde_json::to_vec(
+            messages_for_backend(messages, preserve_native_compaction, &state.provider_compaction_ids).as_ref(),
+        )
+        .map_err(|error| -> FilterError { format!("openai_responses_proxy: {error}").into() })?;
+        let stream_replacement = state
+            .request_body
+            .get("stream")
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|error| -> FilterError { format!("openai_responses_proxy: {error}").into() })?;
 
-        if let Some(object) = outbound.as_object_mut() {
-            if state.history_rehydrated {
-                object.remove("previous_response_id");
-                object.remove("conversation");
+        let mut serialized = Vec::with_capacity(body.len());
+        serialized.push(b'{');
+        let mut wrote_member = false;
+        let mut wrote_input = false;
+        for member in members {
+            if state.history_rehydrated
+                && matches!(
+                    member.name,
+                    TopLevelField::PreviousResponseId | TopLevelField::Conversation
+                )
+            {
+                continue;
             }
-
-            if let Some(items) = object.get("input").and_then(serde_json::Value::as_array) {
-                let projected = messages_for_backend(items, false, &state.provider_compaction_ids);
-                if let Cow::Owned(items) = projected {
-                    object.insert("input".to_owned(), serde_json::Value::Array(items));
+            if wrote_member {
+                serialized.push(b',');
+            }
+            serialized.extend_from_slice(selected_body_slice(body, member.key_start, member.value_start)?);
+            if member.name == TopLevelField::Input {
+                serialized.extend_from_slice(&input_replacement);
+                wrote_input = true;
+            } else if member.name == TopLevelField::Stream {
+                if let Some(replacement) = &stream_replacement {
+                    serialized.extend_from_slice(replacement);
+                } else {
+                    serialized.extend_from_slice(selected_body_slice(body, member.value_start, member.value_end)?);
                 }
+            } else {
+                serialized.extend_from_slice(selected_body_slice(body, member.value_start, member.value_end)?);
             }
+            wrote_member = true;
         }
-
-        let serialized = serde_json::to_vec(&outbound)
-            .map_err(|e| -> FilterError { format!("openai_responses_proxy: {e}").into() })?;
+        if !wrote_input {
+            if wrote_member {
+                serialized.push(b',');
+            }
+            serialized.extend_from_slice(br#""input":"#);
+            serialized.extend_from_slice(&input_replacement);
+        }
+        serialized.push(b'}');
         if serialized.len() > self.config.max_rewritten_body_bytes {
             return Ok(Err(reject_rewritten_body_too_large(
                 serialized.len(),
@@ -219,6 +262,167 @@ impl ResponsesProxyFilter {
             )));
         }
         Ok(Ok(serialized))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// Recognized fields in the request's top-level JSON object.
+enum TopLevelField {
+    /// The Responses input array.
+    Input,
+    /// The effective streaming flag.
+    Stream,
+    /// A locally consumed response selector.
+    PreviousResponseId,
+    /// A locally consumed conversation selector.
+    Conversation,
+    /// Any field preserved byte-for-byte.
+    Other,
+}
+
+/// A top-level JSON member and the byte ranges needed for splicing it.
+struct TopLevelMember {
+    /// The recognized field name.
+    name: TopLevelField,
+    /// Start of the encoded field name.
+    key_start: usize,
+    /// Start of the encoded field value.
+    value_start: usize,
+    /// End of the encoded field value.
+    value_end: usize,
+}
+
+/// Borrow a validated byte range from the selected request body.
+fn selected_body_slice(body: &[u8], start: usize, end: usize) -> Result<&[u8], FilterError> {
+    body.get(start..end)
+        .ok_or_else(|| "openai_responses_proxy: invalid selected request body range".into())
+}
+
+/// Locate top-level members without materializing the complete JSON value.
+#[expect(
+    clippy::too_many_lines,
+    reason = "scanner handles objects, strings, and separators explicitly"
+)]
+fn scan_top_level_object(body: &[u8]) -> Result<Vec<TopLevelMember>, &'static str> {
+    let mut cursor = skip_json_whitespace(body, 0);
+    if body.get(cursor) != Some(&b'{') {
+        return Err("expected a JSON object");
+    }
+    cursor = skip_json_whitespace(body, cursor + 1);
+    let mut members = Vec::new();
+    if body.get(cursor) == Some(&b'}') {
+        return Ok(members);
+    }
+
+    loop {
+        let key_start = cursor;
+        let key_end = scan_json_string(body, cursor)?;
+        let key_bytes = body.get(key_start..key_end).ok_or("invalid JSON field range")?;
+        let key = serde_json::from_slice::<String>(key_bytes).map_err(|_error| "invalid JSON field name")?;
+        cursor = skip_json_whitespace(body, key_end);
+        if body.get(cursor) != Some(&b':') {
+            return Err("expected a colon after a JSON field name");
+        }
+        let value_start = skip_json_whitespace(body, cursor + 1);
+        let value_end = scan_json_value(body, value_start)?;
+        members.push(TopLevelMember {
+            name: match key.as_str() {
+                "input" => TopLevelField::Input,
+                "stream" => TopLevelField::Stream,
+                "previous_response_id" => TopLevelField::PreviousResponseId,
+                "conversation" => TopLevelField::Conversation,
+                _ => TopLevelField::Other,
+            },
+            key_start,
+            value_start,
+            value_end,
+        });
+        cursor = skip_json_whitespace(body, value_end);
+        match body.get(cursor) {
+            Some(b',') => cursor = skip_json_whitespace(body, cursor + 1),
+            Some(b'}') => return Ok(members),
+            _ => return Err("expected a comma or closing brace"),
+        }
+    }
+}
+
+/// Skip JSON whitespace from `cursor`.
+fn skip_json_whitespace(body: &[u8], mut cursor: usize) -> usize {
+    while body.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    cursor
+}
+
+/// Return the exclusive end of a JSON string.
+fn scan_json_string(body: &[u8], start: usize) -> Result<usize, &'static str> {
+    if body.get(start) != Some(&b'"') {
+        return Err("expected a JSON string");
+    }
+    let mut cursor = start + 1;
+    let mut escaped = false;
+    while let Some(byte) = body.get(cursor).copied() {
+        cursor += 1;
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            return Ok(cursor);
+        }
+    }
+    Err("unterminated JSON string")
+}
+
+/// Return the exclusive end of one JSON value.
+#[expect(clippy::too_many_lines, reason = "scanner handles nested JSON delimiters explicitly")]
+fn scan_json_value(body: &[u8], start: usize) -> Result<usize, &'static str> {
+    match body.get(start).copied() {
+        Some(b'"') => scan_json_string(body, start),
+        Some(b'{' | b'[') => {
+            let opening = body.get(start).copied().ok_or("missing JSON value")?;
+            let closing = if opening == b'{' { b'}' } else { b']' };
+            let mut cursor = start + 1;
+            let mut depth = 1_usize;
+            while cursor < body.len() {
+                match body.get(cursor).copied().ok_or("unterminated JSON value")? {
+                    b'"' => cursor = scan_json_string(body, cursor)?,
+                    b'{' | b'[' => {
+                        depth += 1;
+                        cursor += 1;
+                    },
+                    b'}' | b']' => {
+                        depth = depth.checked_sub(1).ok_or("unbalanced JSON value")?;
+                        cursor += 1;
+                        if depth == 0 {
+                            if body.get(cursor - 1).copied() != Some(closing) {
+                                return Err("mismatched JSON delimiters");
+                            }
+                            return Ok(cursor);
+                        }
+                    },
+                    _ => cursor += 1,
+                }
+            }
+            Err("unterminated JSON value")
+        },
+        Some(_) => {
+            let mut cursor = start;
+            while let Some(byte) = body.get(cursor) {
+                if matches!(byte, b',' | b'}' | b']') {
+                    break;
+                }
+                cursor += 1;
+            }
+            let end = body
+                .get(..cursor)
+                .ok_or("invalid JSON value range")?
+                .iter()
+                .rposition(|byte| !byte.is_ascii_whitespace())
+                .map_or(start, |i| i + 1);
+            (end > start).then_some(end).ok_or("empty JSON value")
+        },
+        None => Err("missing JSON value"),
     }
 }
 
@@ -240,9 +444,7 @@ impl HttpFilter for ResponsesProxyFilter {
         // Accept up to the absolute ceiling; the pipeline's body_limits
         // decides the real raw cap. max_rewritten_body_bytes bounds only
         // the body rebuilt from ResponsesState.
-        BodyMode::StreamBuffer {
-            max_bytes: Some(MAX_JSON_BODY_BYTES),
-        }
+        BodyMode::StreamBuffer { max_bytes: None }
     }
 
     fn may_select_streaming_subrequest_response(&self) -> bool {
@@ -267,7 +469,6 @@ impl HttpFilter for ResponsesProxyFilter {
             trace!("buffering request body chunk");
             return Ok(FilterAction::Continue);
         }
-
         let Some(state) = ctx.extensions.get::<ResponsesState>() else {
             select_terminal_response_mode(ctx, body);
             return Ok(FilterAction::Continue);
@@ -318,14 +519,10 @@ impl HttpFilter for ResponsesProxyFilter {
         // projection. Leave it intact for a native OpenAI Responses backend;
         // reserializing here would both allocate unnecessarily and risk
         // replacing changes made by later body filters.
-        if preserve_native_compaction {
-            return Ok(SelectedUpstreamBodyOutcome::Continue);
-        }
-
         let Some(current_body) = body.as_ref() else {
             return Ok(SelectedUpstreamBodyOutcome::Continue);
         };
-        let serialized = match self.serialize_selected_body(current_body, state)? {
+        let serialized = match self.serialize_selected_body(current_body, state, preserve_native_compaction)? {
             Ok(bytes) => bytes,
             Err(FilterAction::Reject(rejection)) => return Ok(SelectedUpstreamBodyOutcome::Reject(rejection)),
             Err(_) => return Err("openai_responses_proxy: invalid selected-upstream body outcome".into()),

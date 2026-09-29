@@ -48,7 +48,7 @@ use super::{
     DEFAULT_STORE_NAME, append_stored_input_items, bound_body_outcome, canonical_openresponses_replay_item,
     error::responses_error_rejection,
     extract_conversation_id,
-    state::{ResponsesState, is_local_compaction_item, strip_local_compaction_marker},
+    state::{ResponsesState, strip_local_compaction_marker},
 };
 use crate::{
     is_event_stream_content_type,
@@ -1269,14 +1269,7 @@ fn replay_messages_from_stored(stored: &[Value]) -> Vec<Value> {
 /// Praxis-generated compaction items carry private provenance metadata in the
 /// store. Only unmarked compaction items are eligible for native replay.
 fn provider_compaction_ids(stored: &[Value]) -> HashSet<String> {
-    stored
-        .iter()
-        .filter(|item| {
-            item.get("type").and_then(Value::as_str) == Some("compaction") && !is_local_compaction_item(item)
-        })
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect()
+    ResponsesState::provider_compaction_ids_from_messages(stored)
 }
 
 /// Parse the request body and extract `previous_response_id`.
