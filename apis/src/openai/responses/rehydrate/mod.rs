@@ -45,8 +45,7 @@ use tracing::{debug, trace, warn};
 #[cfg(feature = "openai-mcp-tools")]
 use super::mcp_dispatch::{OWNER_FINGERPRINT, owner_fingerprint};
 use super::{
-    DEFAULT_STORE_NAME, append_stored_input_items, canonical_openresponses_replay_item,
-    bound_body_outcome,
+    DEFAULT_STORE_NAME, append_stored_input_items, bound_body_outcome, canonical_openresponses_replay_item,
     error::responses_error_rejection,
     extract_conversation_id,
     state::{ResponsesState, is_local_compaction_item, strip_local_compaction_marker},
@@ -1273,8 +1272,7 @@ fn provider_compaction_ids(stored: &[Value]) -> HashSet<String> {
     stored
         .iter()
         .filter(|item| {
-            item.get("type").and_then(Value::as_str) == Some("compaction")
-                && !is_local_compaction_item(item)
+            item.get("type").and_then(Value::as_str) == Some("compaction") && !is_local_compaction_item(item)
         })
         .filter_map(|item| item.get("id").and_then(Value::as_str))
         .map(ToOwned::to_owned)
