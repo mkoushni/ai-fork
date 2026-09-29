@@ -716,6 +716,35 @@ async fn selected_rebuild_projects_state_owned_tools_and_tool_choice() {
 }
 
 #[tokio::test]
+async fn selected_rebuild_keeps_selector_only_body_valid_when_adding_state_fields() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4.1",
+        "previous_response_id": "resp_previous",
+        "tools": [{"type": "function", "name": "lookup"}],
+        "tool_choice": "auto"
+    }));
+    state.history_rehydrated = true;
+    state.messages = vec![json!({"role": "user", "content": "continue"})];
+    state.mark_request_body_for_rebuild();
+    ctx.extensions.insert(state);
+    let mut body = Some(Bytes::from_static(br#"{"previous_response_id":"resp_previous"}"#));
+
+    let action = filter
+        .on_selected_upstream_request_body(&mut ctx, &mut body)
+        .await
+        .unwrap();
+
+    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    let rebuilt: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert_eq!(rebuilt["input"][0]["content"], "continue");
+    assert_eq!(rebuilt["tools"][0]["name"], "lookup");
+    assert_eq!(rebuilt["tool_choice"], "auto");
+}
+
+#[tokio::test]
 async fn provider_previous_response_id_is_byte_exact_without_rehydrate() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");
@@ -1339,6 +1368,22 @@ fn messages_for_native_backend_preserves_provider_compaction_item() {
         result[0], item,
         "provider compaction state must remain byte-equivalent as JSON"
     );
+}
+
+#[test]
+fn messages_for_native_backend_preserves_idless_provider_compaction_item() {
+    let item = json!({
+        "type": "compaction",
+        "encrypted_content": "provider-opaque-state"
+    });
+    let messages = [item.clone()];
+    let result = super::messages_for_backend(&messages, true, &std::collections::HashSet::new());
+
+    assert!(
+        matches!(result, std::borrow::Cow::Borrowed(_)),
+        "native Responses backends must preserve valid ID-less compaction items"
+    );
+    assert_eq!(result[0], item);
 }
 
 #[test]

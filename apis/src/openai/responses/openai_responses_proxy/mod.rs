@@ -260,6 +260,7 @@ impl ResponsesProxyFilter {
             }
             serialized.extend_from_slice(br#""input":"#);
             serialized.extend_from_slice(&input_replacement);
+            wrote_member = true;
         }
         let state_fields: [(TopLevelField, bool, &[u8]); 2] = [
             (TopLevelField::Tools, wrote_tools, br#""tools":"#),
@@ -825,9 +826,13 @@ fn messages_for_backend<'a>(
     for (i, m) in messages.iter().enumerate() {
         let is_provider_compaction = preserve_native_compaction
             && m.get("type").and_then(serde_json::Value::as_str) == Some("compaction")
-            && m.get("id")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| provider_compaction_ids.contains(id));
+            && m.get(crate::openai::responses::state::LOCAL_COMPACTION_MARKER)
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            && match m.get("id").and_then(serde_json::Value::as_str) {
+                Some(id) => provider_compaction_ids.contains(id),
+                None => true,
+            };
         if m.get("type").and_then(serde_json::Value::as_str) == Some("compaction") && !is_provider_compaction {
             let vec = translated.get_or_insert_with(|| messages.get(..i).unwrap_or(&[]).to_vec());
             vec.push(compaction_to_assistant_message(m));

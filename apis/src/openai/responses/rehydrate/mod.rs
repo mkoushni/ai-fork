@@ -1217,12 +1217,11 @@ fn build_state(
     previous_usage: Option<Value>,
 ) -> ResponsesState {
     let replay = replay_messages_from_stored(&stored);
-    let provider_compaction_ids = provider_compaction_ids(&stored);
     let mut state = ResponsesState::from_request_body(parsed_body);
     state.history_rehydrated = true;
     state.messages.splice(0..0, replay);
+    state.provider_compaction_ids.extend(provider_compaction_ids(&stored));
     state.persisted_messages.splice(0..0, stored);
-    state.provider_compaction_ids = provider_compaction_ids;
     state.previous_tools = previous_tools;
     state.previous_usage = previous_usage;
     state

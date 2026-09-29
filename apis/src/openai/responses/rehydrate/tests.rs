@@ -1255,10 +1255,21 @@ fn rehydration_preserves_provider_compaction_provenance_only() {
         }),
     ];
 
-    let state = build_state(json!({"input": "next"}), stored, vec![], None);
+    let state = build_state(
+        json!({
+            "input": [{
+                "type": "compaction",
+                "id": "cmp_current",
+                "encrypted_content": "current-provider-state"
+            }]
+        }),
+        stored,
+        vec![],
+        None,
+    );
     assert_eq!(
         state.provider_compaction_ids,
-        HashSet::from(["cmp_provider".to_owned()])
+        HashSet::from(["cmp_current".to_owned(), "cmp_provider".to_owned()])
     );
     assert_eq!(state.messages[0]["id"], "compact_local");
     assert!(
