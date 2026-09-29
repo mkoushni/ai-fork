@@ -25,7 +25,6 @@ use super::{bounded_json_size, error::responses_error_rejection, file_search_cal
 ///
 /// This field is stored only in the private rehydration history. The outbound
 /// serializer removes it before any item reaches a provider or client.
-#[cfg(feature = "store")]
 pub(crate) const LOCAL_COMPACTION_MARKER: &str = "_praxis_local_compaction";
 
 /// Mark a locally generated compaction item in private persisted history.
@@ -996,11 +995,7 @@ impl ResponsesState {
         messages
             .iter()
             .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("compaction"))
-            .filter(|item| {
-                item.get("_praxis_local_compaction")
-                    .and_then(serde_json::Value::as_bool)
-                    != Some(true)
-            })
+            .filter(|item| item.get(LOCAL_COMPACTION_MARKER).and_then(serde_json::Value::as_bool) != Some(true))
             .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
             .filter(|id| !id.starts_with("compact_"))
             .map(ToOwned::to_owned)
@@ -1412,8 +1407,14 @@ mod tests {
             }]
         }));
 
-        assert!(state.provider_compaction_ids.contains("cmp_provider"));
-        assert!(!state.provider_compaction_ids.contains("compact_local"));
+        assert!(
+            state.provider_compaction_ids.contains("cmp_provider"),
+            "provider compaction IDs should include opaque provider item IDs"
+        );
+        assert!(
+            !state.provider_compaction_ids.contains("compact_local"),
+            "provider compaction IDs should exclude locally generated compaction IDs"
+        );
     }
 
     #[test]

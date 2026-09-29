@@ -568,10 +568,10 @@ impl HttpFilter for ResponsesProxyFilter {
             return Ok(SelectedUpstreamBodyOutcome::Continue);
         }
 
-        // The pre-selection body already carries the provider-native
-        // projection. Leave it intact for a native OpenAI Responses backend;
-        // reserializing here would both allocate unnecessarily and risk
-        // replacing changes made by later body filters.
+        // Splice the selected body's state-owned projection into the live body
+        // produced by the earlier request-body phase. This keeps later body
+        // filter edits to `input` and unrelated fields intact while allowing
+        // state changes, such as compaction replay, to reach the backend.
         let Some(current_body) = body.as_ref() else {
             return Ok(SelectedUpstreamBodyOutcome::Continue);
         };
