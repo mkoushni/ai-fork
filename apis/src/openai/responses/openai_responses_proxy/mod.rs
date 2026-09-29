@@ -41,7 +41,7 @@ use base64::Engine as _;
 use bytes::Bytes;
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, SelectedUpstreamBodyOutcome,
-    SubRequestResponseMode, parse_filter_config,
+    SubRequestResponseMode, body::MAX_JSON_BODY_BYTES, parse_filter_config,
 };
 use serde::{
     Deserialize, Deserializer,
@@ -441,10 +441,13 @@ impl HttpFilter for ResponsesProxyFilter {
     }
 
     fn request_body_mode(&self) -> BodyMode {
-        // Accept up to the absolute ceiling; the pipeline's body_limits
-        // decides the real raw cap. max_rewritten_body_bytes bounds only
-        // the body rebuilt from ResponsesState.
-        BodyMode::StreamBuffer { max_bytes: None }
+        // The pipeline clamps this per-filter bound to body_limits.max_request_bytes
+        // for the raw pre-read and selected-upstream rewrite phases. The
+        // filter's max_rewritten_body_bytes check remains the semantic limit
+        // for bodies rebuilt from ResponsesState.
+        BodyMode::StreamBuffer {
+            max_bytes: Some(MAX_JSON_BODY_BYTES),
+        }
     }
 
     fn may_select_streaming_subrequest_response(&self) -> bool {

@@ -67,8 +67,9 @@ fn body_mode_is_stream_buffer() {
     match filter.request_body_mode() {
         BodyMode::StreamBuffer { max_bytes } => {
             assert_eq!(
-                max_bytes, None,
-                "StreamBuffer should defer raw-body sizing to the pipeline body_limits"
+                max_bytes,
+                Some(67_108_864),
+                "StreamBuffer should default to the 64 MiB ceiling; the pipeline clamps it to body_limits"
             );
         },
         other => panic!("openai_responses_proxy must use StreamBuffer, got {other:?}"),
