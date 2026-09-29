@@ -28,6 +28,8 @@ mod pinned_client;
 pub mod prompt_enrich;
 mod register;
 pub mod routing;
+#[cfg(feature = "store")]
+mod store_readiness;
 mod time_to_first_token;
 #[cfg(feature = "token-ceiling-filter")]
 mod token_ceiling;
@@ -51,6 +53,8 @@ pub use metering::ExternalMeteringFilter;
 pub use prompt_enrich::PromptEnrichFilter;
 pub use register::{build_ai_registry, install_pipeline_extensions, register_ai_filters};
 pub use routing::{CredentialInjectFilter, IntelligentRouteFilter, ProviderRouteFilter};
+#[cfg(feature = "store")]
+pub use store_readiness::{FILTER_NAME as STORE_READINESS_GATE_FILTER_NAME, StoreReadinessGateFilter};
 pub use time_to_first_token::TimeToFirstTokenFilter;
 #[cfg(feature = "token-ceiling-filter")]
 pub use token_ceiling::TokenCeilingFilter;
