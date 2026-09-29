@@ -1283,7 +1283,12 @@ pub(crate) fn tool_search_discovery_is_within_budget(state: &ResponsesState) -> 
 /// a single item object, or an array of items. Normalizes all three
 /// forms to a `Vec<Value>`.
 fn normalize_input(body: &serde_json::Value) -> Vec<serde_json::Value> {
-    match body.get("input") {
+    normalize_input_value(body.get("input"))
+}
+
+/// Normalize one Responses API `input` value into a message array.
+pub(crate) fn normalize_input_value(input: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    match input {
         Some(serde_json::Value::Array(arr)) => arr.clone(),
         Some(input @ serde_json::Value::Object(_)) => vec![input.clone()],
         Some(serde_json::Value::String(s)) => {

@@ -52,8 +52,10 @@ use tracing::{debug, trace};
 
 use self::config::{ResponsesProxyConfig, build_config};
 use super::{
-    body_limits::reject_rewritten_body_too_large, enforce_agentic_stream_guard, error::responses_error_rejection,
-    state::ResponsesState,
+    body_limits::reject_rewritten_body_too_large,
+    enforce_agentic_stream_guard,
+    error::responses_error_rejection,
+    state::{ResponsesState, normalize_input_value},
 };
 use crate::{classifier::is_responses_create, json_body::SerializedJson};
 
@@ -200,13 +202,65 @@ impl ResponsesProxyFilter {
         let members = scan_top_level_object(body).map_err(|error| -> FilterError {
             format!("openai_responses_proxy: invalid selected request body: {error}").into()
         })?;
-        let messages = if provider_owns_conversation(state) && state.iteration > 0 {
+        let state_messages = if provider_owns_conversation(state) && state.iteration > 0 {
             state.messages.get(state.provider_history_len..).unwrap_or_default()
         } else {
             &state.messages
         };
+        let live_input = selected_input_messages(body, &members)?;
+        let state_backend_messages = messages_for_backend(
+            state_messages,
+            preserve_native_compaction,
+            &state.provider_compaction_ids,
+        );
+        let mut reconciled_messages = None;
+        if let Some(live_input) = live_input {
+            if live_input.as_slice() == state.input.as_slice()
+                || live_input.as_slice() == state_backend_messages.as_ref()
+            {
+                // The earlier request-body phase already produced the same
+                // projection; keep the state-owned representation so compaction
+                // translation and provenance are applied exactly once.
+            } else if state.history_rehydrated {
+                let history_len = state.messages.len().saturating_sub(state.input.len());
+                let history = state.messages.get(..history_len).unwrap_or_default();
+                let projected_history =
+                    messages_for_backend(history, preserve_native_compaction, &state.provider_compaction_ids);
+                if live_input.len() >= projected_history.len()
+                    && live_input.get(..projected_history.len()) == Some(projected_history.as_ref())
+                {
+                    // A prior rebuild has already included local history. Keep
+                    // the live body so later filters' edits remain visible.
+                    reconciled_messages = Some(live_input);
+                } else {
+                    // A direct selected-body invocation may still contain only
+                    // the current input. Reattach the locally replayed history.
+                    let mut merged = history.to_vec();
+                    merged.extend(live_input);
+                    reconciled_messages = Some(merged);
+                }
+            } else {
+                // Stateless and provider-owned continuations have no local
+                // history to prepend: the selected body's input is authoritative.
+                reconciled_messages = Some(live_input);
+            }
+        }
+        let messages = reconciled_messages.as_deref().unwrap_or(state_messages);
+        let provider_compaction_ids = reconciled_messages.as_ref().map_or_else(
+            || Cow::Borrowed(&state.provider_compaction_ids),
+            |messages| {
+                let discovered = ResponsesState::provider_compaction_ids_from_messages(messages);
+                if discovered.is_empty() {
+                    Cow::Borrowed(&state.provider_compaction_ids)
+                } else {
+                    let mut ids = state.provider_compaction_ids.clone();
+                    ids.extend(discovered);
+                    Cow::Owned(ids)
+                }
+            },
+        );
         let input_replacement = serde_json::to_vec(
-            messages_for_backend(messages, preserve_native_compaction, &state.provider_compaction_ids).as_ref(),
+            messages_for_backend(messages, preserve_native_compaction, provider_compaction_ids.as_ref()).as_ref(),
         )
         .map_err(|error| -> FilterError { format!("openai_responses_proxy: {error}").into() })?;
         let stream_replacement = state
@@ -345,6 +399,20 @@ fn selected_state_field(state: &ResponsesState, field: TopLevelField) -> Result<
 fn selected_body_slice(body: &[u8], start: usize, end: usize) -> Result<&[u8], FilterError> {
     body.get(start..end)
         .ok_or_else(|| "openai_responses_proxy: invalid selected request body range".into())
+}
+
+/// Parse only the selected body's `input` member for reconciliation.
+fn selected_input_messages(
+    body: &[u8],
+    members: &[TopLevelMember],
+) -> Result<Option<Vec<serde_json::Value>>, FilterError> {
+    let Some(member) = members.iter().rev().find(|member| member.name == TopLevelField::Input) else {
+        return Ok(None);
+    };
+    let value = serde_json::from_slice(selected_body_slice(body, member.value_start, member.value_end)?).map_err(
+        |error| -> FilterError { format!("openai_responses_proxy: invalid selected input: {error}").into() },
+    )?;
+    Ok(Some(normalize_input_value(Some(&value))))
 }
 
 /// Locate top-level members without materializing the complete JSON value.

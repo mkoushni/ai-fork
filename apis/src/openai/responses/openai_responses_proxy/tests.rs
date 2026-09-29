@@ -716,6 +716,36 @@ async fn selected_rebuild_projects_state_owned_tools_and_tool_choice() {
 }
 
 #[tokio::test]
+async fn selected_rebuild_preserves_later_input_filter_edit() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4.1",
+        "input": [{"type": "message", "role": "user", "content": "before filter"}]
+    }));
+    state.mark_request_body_for_rebuild();
+    ctx.extensions.insert(state);
+    // Simulate a later body filter changing the live input after the state
+    // snapshot was created.
+    let mut body = Some(Bytes::from_static(
+        br#"{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":"after filter"}]}"#,
+    ));
+
+    let action = filter
+        .on_selected_upstream_request_body(&mut ctx, &mut body)
+        .await
+        .unwrap();
+
+    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    let selected_backend_body: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        selected_backend_body["input"][0]["content"], "after filter",
+        "selected backend must receive the live input produced by the later body filter"
+    );
+}
+
+#[tokio::test]
 async fn selected_rebuild_keeps_selector_only_body_valid_when_adding_state_fields() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");
