@@ -8,10 +8,12 @@
 //! enforced when a quota backend is unavailable. Place it after request
 //! translation/enrichment so it evaluates the provider-bound body.
 
-#![allow(
-    missing_docs,
-    clippy::missing_docs_in_private_items,
-    reason = "private configuration details are covered by the public filter contract"
+#![cfg_attr(
+    not(test),
+    expect(
+        clippy::missing_docs_in_private_items,
+        reason = "private configuration details are covered by the public filter contract"
+    )
 )]
 
 use async_trait::async_trait;
