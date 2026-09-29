@@ -709,10 +709,19 @@ async fn selected_rebuild_projects_state_owned_tools_and_tool_choice() {
         .await
         .unwrap();
 
-    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    assert!(
+        matches!(action, SelectedUpstreamBodyOutcome::Continue),
+        "selected rebuild should continue after projecting state-owned tools"
+    );
     let rebuilt: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
-    assert_eq!(rebuilt["tools"][0]["type"], "function");
-    assert_eq!(rebuilt["tool_choice"], "auto");
+    assert_eq!(
+        rebuilt["tools"][0]["type"], "function",
+        "selected backend should receive the state-owned function tool"
+    );
+    assert_eq!(
+        rebuilt["tool_choice"], "auto",
+        "selected backend should receive the state-owned tool choice"
+    );
 }
 
 #[tokio::test]
@@ -737,7 +746,10 @@ async fn selected_rebuild_preserves_later_input_filter_edit() {
         .await
         .unwrap();
 
-    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    assert!(
+        matches!(action, SelectedUpstreamBodyOutcome::Continue),
+        "selected rebuild should continue after preserving the filtered input"
+    );
     let selected_backend_body: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
     assert_eq!(
         selected_backend_body["input"][0]["content"], "after filter",
@@ -767,11 +779,23 @@ async fn selected_rebuild_keeps_selector_only_body_valid_when_adding_state_field
         .await
         .unwrap();
 
-    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    assert!(
+        matches!(action, SelectedUpstreamBodyOutcome::Continue),
+        "selector-only rebuild should produce a valid backend request"
+    );
     let rebuilt: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
-    assert_eq!(rebuilt["input"][0]["content"], "continue");
-    assert_eq!(rebuilt["tools"][0]["name"], "lookup");
-    assert_eq!(rebuilt["tool_choice"], "auto");
+    assert_eq!(
+        rebuilt["input"][0]["content"], "continue",
+        "selector-only rebuild should add the current input"
+    );
+    assert_eq!(
+        rebuilt["tools"][0]["name"], "lookup",
+        "selector-only rebuild should add state-owned tools"
+    );
+    assert_eq!(
+        rebuilt["tool_choice"], "auto",
+        "selector-only rebuild should add the state-owned tool choice"
+    );
 }
 
 #[tokio::test]
