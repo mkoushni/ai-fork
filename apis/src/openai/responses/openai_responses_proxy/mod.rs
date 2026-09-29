@@ -48,7 +48,7 @@ use serde::{
     de::{IgnoredAny, MapAccess, Visitor},
     ser::SerializeMap as _,
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 use self::config::{ResponsesProxyConfig, build_config};
 use super::{
@@ -222,6 +222,10 @@ impl ResponsesProxyFilter {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "request and selected-upstream body phases share one filter implementation"
+)]
 #[async_trait]
 impl HttpFilter for ResponsesProxyFilter {
     fn name(&self) -> &'static str {
@@ -288,8 +292,6 @@ impl HttpFilter for ResponsesProxyFilter {
         ctx: &mut HttpFilterContext<'_>,
         body: &mut Option<Bytes>,
     ) -> Result<SelectedUpstreamBodyOutcome, FilterError> {
-        ctx.extensions
-            .insert(NativeOpenaiResponsesUpstream(is_openai_responses_provider(ctx)));
         if let Some(action) = Self::reject_prompt_for_non_openai_upstream(ctx, body) {
             return Ok(action);
         }
@@ -337,7 +339,6 @@ impl HttpFilter for ResponsesProxyFilter {
 
         Ok(SelectedUpstreamBodyOutcome::Continue)
     }
-
 }
 
 /// Narrow deserialization target for the provider-visible stream bit.
@@ -434,15 +435,6 @@ impl Visitor<'_> for PromptTemplateFieldVisitor {
     }
 }
 
-/// Capability captured after upstream selection and before body processing.
-///
-/// The selected-cluster metadata is published during the request-header phase,
-/// while `ResponsesState` is serialized during the request-body phase. Keeping
-/// the decision in request extensions makes the body rewrite independent of
-/// hook ordering and prevents an untagged backend from receiving opaque native
-/// compaction state.
-#[derive(Clone, Copy)]
-struct NativeOpenaiResponsesUpstream(bool);
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
