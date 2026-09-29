@@ -1273,7 +1273,8 @@ fn provider_compaction_ids(stored: &[Value]) -> HashSet<String> {
     stored
         .iter()
         .filter(|item| {
-            item.get("type").and_then(Value::as_str) == Some("compaction") && !is_local_compaction_item(item)
+            item.get("type").and_then(Value::as_str) == Some("compaction")
+                && !is_local_compaction_item(item)
         })
         .filter_map(|item| item.get("id").and_then(Value::as_str))
         .map(ToOwned::to_owned)
