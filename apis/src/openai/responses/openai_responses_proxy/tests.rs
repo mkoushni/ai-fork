@@ -687,6 +687,35 @@ async fn initialized_state_preserves_scalar_input_on_first_pass() {
 }
 
 #[tokio::test]
+async fn selected_rebuild_projects_state_owned_tools_and_tool_choice() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4.1",
+        "input": "hello",
+        "tools": [{"type": "custom", "name": "apply_patch"}]
+    }));
+    state.request_body["tools"] = json!([{"type": "function", "name": "apply_patch"}]);
+    state.request_body["tool_choice"] = json!("auto");
+    state.mark_request_body_for_rebuild();
+    ctx.extensions.insert(state);
+    let mut body = Some(Bytes::from_static(
+        br#"{"model":"gpt-4.1","input":"hello","tools":[{"type":"custom","name":"apply_patch"}]}"#,
+    ));
+
+    let action = filter
+        .on_selected_upstream_request_body(&mut ctx, &mut body)
+        .await
+        .unwrap();
+
+    assert!(matches!(action, SelectedUpstreamBodyOutcome::Continue));
+    let rebuilt: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert_eq!(rebuilt["tools"][0]["type"], "function");
+    assert_eq!(rebuilt["tool_choice"], "auto");
+}
+
+#[tokio::test]
 async fn provider_previous_response_id_is_byte_exact_without_rehydrate() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");

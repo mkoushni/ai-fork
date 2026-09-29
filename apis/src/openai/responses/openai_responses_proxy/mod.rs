@@ -220,6 +220,8 @@ impl ResponsesProxyFilter {
         serialized.push(b'{');
         let mut wrote_member = false;
         let mut wrote_input = false;
+        let mut wrote_tools = false;
+        let mut wrote_tool_choice = false;
         for member in members {
             if state.history_rehydrated
                 && matches!(
@@ -229,6 +231,7 @@ impl ResponsesProxyFilter {
             {
                 continue;
             }
+            let state_replacement = selected_state_field(state, member.name)?;
             if wrote_member {
                 serialized.push(b',');
             }
@@ -236,6 +239,10 @@ impl ResponsesProxyFilter {
             if member.name == TopLevelField::Input {
                 serialized.extend_from_slice(&input_replacement);
                 wrote_input = true;
+            } else if let Some(replacement) = state_replacement {
+                serialized.extend_from_slice(&replacement);
+                wrote_tools |= member.name == TopLevelField::Tools;
+                wrote_tool_choice |= member.name == TopLevelField::ToolChoice;
             } else if member.name == TopLevelField::Stream {
                 if let Some(replacement) = &stream_replacement {
                     serialized.extend_from_slice(replacement);
@@ -253,6 +260,24 @@ impl ResponsesProxyFilter {
             }
             serialized.extend_from_slice(br#""input":"#);
             serialized.extend_from_slice(&input_replacement);
+        }
+        let state_fields: [(TopLevelField, bool, &[u8]); 2] = [
+            (TopLevelField::Tools, wrote_tools, br#""tools":"#),
+            (TopLevelField::ToolChoice, wrote_tool_choice, br#""tool_choice":"#),
+        ];
+        for (field, wrote, key) in state_fields {
+            if wrote {
+                continue;
+            }
+            let Some(replacement) = selected_state_field(state, field)? else {
+                continue;
+            };
+            if wrote_member {
+                serialized.push(b',');
+            }
+            serialized.extend_from_slice(key);
+            serialized.extend_from_slice(&replacement);
+            wrote_member = true;
         }
         serialized.push(b'}');
         if serialized.len() > self.config.max_rewritten_body_bytes {
@@ -272,6 +297,10 @@ enum TopLevelField {
     Input,
     /// The effective streaming flag.
     Stream,
+    /// Provider-visible tool declarations owned by [`ResponsesState`].
+    Tools,
+    /// Provider-visible tool choice owned by [`ResponsesState`].
+    ToolChoice,
     /// A locally consumed response selector.
     PreviousResponseId,
     /// A locally consumed conversation selector.
@@ -290,6 +319,25 @@ struct TopLevelMember {
     value_start: usize,
     /// End of the encoded field value.
     value_end: usize,
+}
+
+/// Return the state-owned replacement for a selected-body member, if one is
+/// required by the current rebuild.
+fn selected_state_field(state: &ResponsesState, field: TopLevelField) -> Result<Option<Vec<u8>>, FilterError> {
+    let key = match field {
+        TopLevelField::Tools => "tools",
+        TopLevelField::ToolChoice => "tool_choice",
+        _ => return Ok(None),
+    };
+    if !state.request_body_requires_rebuild() {
+        return Ok(None);
+    }
+    let Some(value) = state.request_body.get(key) else {
+        return Ok(None);
+    };
+    serde_json::to_vec(value)
+        .map(Some)
+        .map_err(|error| format!("openai_responses_proxy: {error}").into())
 }
 
 /// Borrow a validated byte range from the selected request body.
@@ -329,6 +377,8 @@ fn scan_top_level_object(body: &[u8]) -> Result<Vec<TopLevelMember>, &'static st
             name: match key.as_str() {
                 "input" => TopLevelField::Input,
                 "stream" => TopLevelField::Stream,
+                "tools" => TopLevelField::Tools,
+                "tool_choice" => TopLevelField::ToolChoice,
                 "previous_response_id" => TopLevelField::PreviousResponseId,
                 "conversation" => TopLevelField::Conversation,
                 _ => TopLevelField::Other,
