@@ -596,10 +596,10 @@ impl HttpFilter for ResponsesProxyFilter {
     }
 
     fn request_body_mode(&self) -> BodyMode {
-        // The pipeline clamps this per-filter bound to body_limits.max_request_bytes
-        // for the raw pre-read and selected-upstream rewrite phases. The
-        // filter's max_rewritten_body_bytes check remains the semantic limit
-        // for bodies rebuilt from ResponsesState.
+        // The pipeline clamps this per-filter bound to the effective
+        // body_limits.max_request_bytes. The selected-upstream phase also
+        // checks its rebuilt projection against that same effective ceiling;
+        // max_rewritten_body_bytes remains the independent rewriter limit.
         BodyMode::StreamBuffer {
             max_bytes: Some(MAX_JSON_BODY_BYTES),
         }
@@ -686,6 +686,25 @@ impl HttpFilter for ResponsesProxyFilter {
             Err(_) => return Err("openai_responses_proxy: invalid selected-upstream body outcome".into()),
         };
 
+        if let Some(limit) = effective_request_body_limit(ctx)
+            && serialized.len() > limit
+        {
+            debug!(
+                body_bytes = serialized.len(),
+                max_bytes = limit,
+                "selected rebuilt request body exceeds effective body limit"
+            );
+            return Ok(SelectedUpstreamBodyOutcome::Reject(responses_error_rejection(
+                413,
+                "invalid_request_error",
+                &format!(
+                    "selected request body ({} bytes) exceeds maximum ({} bytes)",
+                    serialized.len(),
+                    limit
+                ),
+            )));
+        }
+
         SerializedJson::from_bytes(serialized).commit(body, self.name(), "body");
         select_terminal_response_mode(ctx, body);
         if let Some(rejection) = enforce_agentic_stream_guard(ctx) {
@@ -693,6 +712,21 @@ impl HttpFilter for ResponsesProxyFilter {
         }
 
         Ok(SelectedUpstreamBodyOutcome::Continue)
+    }
+}
+
+/// Return the request ceiling applied by the pipeline to this filter.
+///
+/// Selected-upstream body participants are validated to use a bounded
+/// `StreamBuffer`, so this is the effective `body_limits.max_request_bytes`
+/// after the pipeline has clamped the filter's declared mode. The other
+/// variants keep this helper safe for direct unit-test invocation and future
+/// pipeline changes.
+fn effective_request_body_limit(ctx: &HttpFilterContext<'_>) -> Option<usize> {
+    match ctx.request_body_mode {
+        BodyMode::StreamBuffer { max_bytes } => max_bytes,
+        BodyMode::SizeLimit { max_bytes } => Some(max_bytes),
+        _ => None,
     }
 }
 

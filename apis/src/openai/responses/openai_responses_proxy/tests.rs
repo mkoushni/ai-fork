@@ -1080,6 +1080,45 @@ async fn rejects_oversized_rebuilt_body_with_413() {
     );
 }
 
+#[tokio::test]
+async fn rejects_selected_rebuild_above_effective_request_body_limit() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str("max_rewritten_body_bytes: 4096").unwrap();
+    let filter = super::ResponsesProxyFilter::from_config(&yaml).unwrap();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    ctx.request_body_mode = BodyMode::StreamBuffer { max_bytes: Some(128) };
+
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4o",
+        "input": "hello",
+        "previous_response_id": "resp_abc123"
+    }));
+    state.messages.push(json!({
+        "role": "user",
+        "content": "x".repeat(512)
+    }));
+    state.history_rehydrated = true;
+    state.mark_request_body_for_rebuild();
+    ctx.extensions.insert(state);
+
+    let original = Bytes::from_static(br#"{"model":"gpt-4o","input":"hello","previous_response_id":"resp_abc123"}"#);
+    let mut body = Some(original.clone());
+    let action = filter
+        .on_selected_upstream_request_body(&mut ctx, &mut body)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(&action, SelectedUpstreamBodyOutcome::Reject(rejection) if rejection.status == 413),
+        "selected rebuilds must reject projections above the effective request body limit"
+    );
+    assert_eq!(
+        body.as_ref(),
+        Some(&original),
+        "an oversized selected projection must not be committed to the upstream body"
+    );
+}
+
 #[test]
 fn serialized_body_cap_uses_conservative_native_projection() {
     let opaque_state = "opaque-provider-state".repeat(512);
