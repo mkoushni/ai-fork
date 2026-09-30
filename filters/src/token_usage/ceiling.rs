@@ -227,20 +227,21 @@ impl HttpFilter for TokenCeilingFilter {
         }
 
         if let Some(limit) = self.max_input_tokens {
-            let serialized = serde_json::to_string(&value).map_err(|error| -> FilterError {
-                format!("token_ceiling: failed to serialize request: {error}").into()
-            })?;
             // Every token occupies at least one UTF-8 byte, so a body no
             // larger than the token ceiling cannot exceed it after encoding.
-            let estimated = if serialized.len() as u64 <= limit {
-                serialized.len() as u64
+            let len = raw.len() as u64;
+            let estimated = if len <= limit {
+                len
             } else {
                 let tokenizer = self.tokenizer;
-                tokio::task::spawn_blocking(move || tokenizer.count(&serialized) as u64)
-                    .await
-                    .map_err(|error| -> FilterError {
-                        format!("token_ceiling: tokenization task failed: {error}").into()
-                    })?
+                let raw = raw.clone();
+                tokio::task::spawn_blocking(move || {
+                    std::str::from_utf8(&raw).map_or(u64::MAX, |text| tokenizer.count(text) as u64)
+                })
+                .await
+                .map_err(|error| -> FilterError {
+                    format!("token_ceiling: tokenization task failed: {error}").into()
+                })?
             };
             if estimated > limit {
                 return Ok(Self::rejection(
@@ -256,8 +257,11 @@ impl HttpFilter for TokenCeilingFilter {
 }
 
 #[cfg(test)]
-#[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "tests")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests use unwrap/panic for fixture failures"
+)]
 mod tests {
     use http::Method;
     use praxis_filter::HttpFilter;
