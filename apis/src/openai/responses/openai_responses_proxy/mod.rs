@@ -259,7 +259,7 @@ impl ResponsesProxyFilter {
             || Cow::Borrowed(&state.provider_compaction_ids),
             |messages| {
                 let discovered = ResponsesState::provider_compaction_ids_from_messages(messages);
-                if discovered.is_empty() {
+                if discovered.is_empty() || discovered.is_subset(&state.provider_compaction_ids) {
                     Cow::Borrowed(&state.provider_compaction_ids)
                 } else {
                     let mut ids = state.provider_compaction_ids.clone();
