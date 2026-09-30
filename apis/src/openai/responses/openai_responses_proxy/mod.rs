@@ -125,7 +125,7 @@ impl ResponsesProxyFilter {
     ) -> Option<SelectedUpstreamBodyOutcome> {
         (is_responses_create(&ctx.request.method, ctx.request.uri.path())
             && request_has_prompt_template(ctx, body)
-            && !is_openai_responses_provider(ctx))
+            && !selected_backend_uses_native_responses(ctx))
         .then(|| {
             debug!("rejecting prompt template for non-OpenAI Responses backend");
             SelectedUpstreamBodyOutcome::Reject(responses_error_rejection(
@@ -618,7 +618,7 @@ impl HttpFilter for ResponsesProxyFilter {
         if let Some(action) = Self::reject_prompt_for_non_openai_upstream(ctx, body) {
             return Ok(action);
         }
-        let preserve_native_compaction = is_openai_responses_provider(ctx);
+        let preserve_native_compaction = selected_backend_uses_native_responses(ctx);
         let Some(state) = ctx.extensions.get::<ResponsesState>() else {
             select_terminal_response_mode(ctx, body);
             if let Some(rejection) = enforce_agentic_stream_guard(ctx) {
@@ -780,10 +780,9 @@ fn request_has_prompt_template(ctx: &HttpFilterContext<'_>, body: &Option<Bytes>
     body.as_deref().is_some_and(raw_request_has_prompt)
 }
 
-/// Whether the selected cluster explicitly supports OpenAI Responses behavior.
-fn is_openai_responses_provider(ctx: &HttpFilterContext<'_>) -> bool {
+/// Whether the selected cluster speaks the native Responses wire format.
+fn selected_backend_uses_native_responses(ctx: &HttpFilterContext<'_>) -> bool {
     ctx.selected_application_protocol() == Some("openai_responses")
-        && ctx.selected_application_provider() == Some("openai")
 }
 
 /// Align the typed Praxis response mode with the effective serialized request.

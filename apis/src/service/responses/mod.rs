@@ -252,8 +252,9 @@ fn assemble_stored_messages(input: Value, output: Option<&Value>) -> Value {
     append_stored_input_items(&mut messages, input);
 
     match output {
+        Some(Value::Array(items)) if messages.ends_with(items) => {},
         Some(Value::Array(items)) => messages.extend(items.iter().cloned()),
-        Some(output) if !output.is_null() => messages.push(output.clone()),
+        Some(output) if !output.is_null() && messages.last() != Some(output) => messages.push(output.clone()),
         Some(_) | None => {},
     }
 
