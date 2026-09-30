@@ -125,7 +125,7 @@ impl ResponsesProxyFilter {
     ) -> Option<SelectedUpstreamBodyOutcome> {
         (is_responses_create(&ctx.request.method, ctx.request.uri.path())
             && request_has_prompt_template(ctx, body)
-            && !selected_backend_uses_native_responses(ctx))
+            && !selected_backend_allows_prompt_templates(ctx))
         .then(|| {
             debug!("rejecting prompt template for non-OpenAI Responses backend");
             SelectedUpstreamBodyOutcome::Reject(responses_error_rejection(
@@ -783,6 +783,12 @@ fn request_has_prompt_template(ctx: &HttpFilterContext<'_>, body: &Option<Bytes>
 /// Whether the selected cluster speaks the native Responses wire format.
 fn selected_backend_uses_native_responses(ctx: &HttpFilterContext<'_>) -> bool {
     ctx.selected_application_protocol() == Some("openai_responses")
+}
+
+/// Whether the selected cluster may receive OpenAI-managed prompt templates.
+fn selected_backend_allows_prompt_templates(ctx: &HttpFilterContext<'_>) -> bool {
+    selected_backend_uses_native_responses(ctx)
+        && ctx.selected_application_provider() == Some("openai")
 }
 
 /// Align the typed Praxis response mode with the effective serialized request.
