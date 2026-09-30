@@ -265,7 +265,16 @@ fn assemble_stored_messages(input: Value, output: Option<&Value>) -> Value {
                         .is_some_and(|(message_suffix, output_prefix)| message_suffix == output_prefix)
                 })
                 .unwrap_or(0);
-            messages.extend(items.iter().skip(overlap).cloned());
+            let new_items = items
+                .iter()
+                .skip(overlap)
+                .filter(|item| {
+                    item.get("type").and_then(Value::as_str) != Some("compaction")
+                        || !messages.iter().any(|message| message == *item)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            messages.extend(new_items);
         },
         Some(output) if !output.is_null() && messages.last() != Some(output) => messages.push(output.clone()),
         Some(_) | None => {},
