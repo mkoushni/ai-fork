@@ -2841,6 +2841,32 @@ fn streamed_provider_conversation_marks_persisted_history() {
     );
 }
 
+#[test]
+fn appends_streamed_provider_compaction_to_replay_state() {
+    let compaction = json!({
+        "type": "compaction",
+        "id": "cmp_streamed",
+        "encrypted_content": "provider-state"
+    });
+    let input = json!({"type": "message", "role": "user", "content": "continue"});
+    let mut state = ResponsesState {
+        messages: vec![input.clone()],
+        persisted_messages: vec![input],
+        response_object: json!({"output": [compaction]}),
+        ..ResponsesState::default()
+    };
+
+    super::collect_streaming_output_items(&mut state);
+
+    assert_eq!(state.messages[1]["type"], "compaction");
+    assert_eq!(state.persisted_messages[1]["id"], "cmp_streamed");
+    assert!(
+        state.provider_compaction_ids.contains("cmp_streamed"),
+        "streamed provider compaction IDs must be retained for replay"
+    );
+    assert_eq!(state.accumulated_output[0]["id"], "cmp_streamed");
+}
+
 /// Regression (#955): the sole owner stamps a stable synthetic id on every
 /// id-less output item before accumulation, so the public response never ships an
 /// item without an id. A private `function_call(name=file_search)` that arrives
