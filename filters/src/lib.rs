@@ -31,8 +31,6 @@ pub mod routing;
 #[cfg(feature = "store")]
 mod store_readiness;
 mod time_to_first_token;
-#[cfg(feature = "token-ceiling-filter")]
-mod token_ceiling;
 #[cfg(feature = "token-rate-limit-filter")]
 mod token_rate_limit;
 mod token_usage;
@@ -56,10 +54,10 @@ pub use routing::{CredentialInjectFilter, IntelligentRouteFilter, ProviderRouteF
 #[cfg(feature = "store")]
 pub use store_readiness::{FILTER_NAME as STORE_READINESS_GATE_FILTER_NAME, StoreReadinessGateFilter};
 pub use time_to_first_token::TimeToFirstTokenFilter;
-#[cfg(feature = "token-ceiling-filter")]
-pub use token_ceiling::TokenCeilingFilter;
 #[cfg(feature = "token-rate-limit-filter")]
 pub use token_rate_limit::TokenRateLimitFilter;
+#[cfg(feature = "token-ceiling-filter")]
+pub use token_usage::TokenCeilingFilter;
 pub use token_usage::{StreamUsageInjectFilter, TokenCountFilter, TokenUsageHeadersFilter};
 
 /// Build an isolated client after installing the process-wide crypto provider.
