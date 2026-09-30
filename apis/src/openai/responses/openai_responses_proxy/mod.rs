@@ -780,7 +780,10 @@ fn request_has_prompt_template(ctx: &HttpFilterContext<'_>, body: &Option<Bytes>
     body.as_deref().is_some_and(raw_request_has_prompt)
 }
 
-/// Whether the selected cluster speaks the native Responses wire format.
+/// Whether the selected backend uses the native Responses wire protocol.
+///
+/// Compaction preservation follows the selected wire protocol rather than the
+/// provider name, since one provider may support multiple application protocols.
 fn selected_backend_uses_native_responses(ctx: &HttpFilterContext<'_>) -> bool {
     ctx.selected_application_protocol() == Some("openai_responses")
 }
