@@ -1018,6 +1018,13 @@ fn compaction_to_assistant_message(m: &serde_json::Value) -> serde_json::Value {
 /// larger opaque provider item that the selected-upstream hook will preserve.
 pub(super) fn serialized_outbound_body_len(state: &ResponsesState) -> Result<usize, serde_json::Error> {
     let translated = serialized_outbound_body_len_for(state, false)?;
+    if !state
+        .messages
+        .iter()
+        .any(|message| message.get("type").and_then(serde_json::Value::as_str) == Some("compaction"))
+    {
+        return Ok(translated);
+    }
     let native = serialized_outbound_body_len_for(state, true)?;
     Ok(translated.max(native))
 }
