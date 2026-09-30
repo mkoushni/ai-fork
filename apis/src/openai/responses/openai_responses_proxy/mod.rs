@@ -787,8 +787,7 @@ fn selected_backend_uses_native_responses(ctx: &HttpFilterContext<'_>) -> bool {
 
 /// Whether the selected cluster may receive OpenAI-managed prompt templates.
 fn selected_backend_allows_prompt_templates(ctx: &HttpFilterContext<'_>) -> bool {
-    selected_backend_uses_native_responses(ctx)
-        && ctx.selected_application_provider() == Some("openai")
+    selected_backend_uses_native_responses(ctx) && ctx.selected_application_provider() == Some("openai")
 }
 
 /// Align the typed Praxis response mode with the effective serialized request.
