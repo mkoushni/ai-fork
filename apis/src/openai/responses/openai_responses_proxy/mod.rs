@@ -55,7 +55,7 @@ use super::{
     body_limits::reject_rewritten_body_too_large,
     enforce_agentic_stream_guard,
     error::responses_error_rejection,
-    state::{ResponsesState, normalize_input_value},
+    state::{ResponsesState, normalize_input_owned},
 };
 use crate::{classifier::is_responses_create, json_body::SerializedJson};
 
@@ -222,7 +222,8 @@ impl ResponsesProxyFilter {
                 // projection; keep the state-owned representation so compaction
                 // translation and provenance are applied exactly once.
             } else if state.history_rehydrated {
-                let history_len = state.messages.len().saturating_sub(state.input.len());
+                let appended = appended_state_messages(state);
+                let history_len = state.messages.len().saturating_sub(state.input.len() + appended.len());
                 let history = state.messages.get(..history_len).unwrap_or_default();
                 let projected_history =
                     messages_for_backend(history, preserve_native_compaction, &state.provider_compaction_ids);
@@ -230,19 +231,27 @@ impl ResponsesProxyFilter {
                     && live_input.get(..projected_history.len()) == Some(projected_history.as_ref())
                 {
                     // A prior rebuild has already included local history. Keep
-                    // the live body so later filters' edits remain visible.
-                    reconciled_messages = Some(live_input);
+                    // the live body so later filters' edits remain visible,
+                    // while retaining any agentic results appended afterward.
+                    reconciled_messages = Some(append_state_messages(live_input, appended));
                 } else {
                     // A direct selected-body invocation may still contain only
-                    // the current input. Reattach the locally replayed history.
+                    // the current input. Reattach the locally replayed history
+                    // and any agentic results appended after it.
                     let mut merged = history.to_vec();
                     merged.extend(live_input);
+                    merged.extend(appended.iter().cloned());
                     reconciled_messages = Some(merged);
                 }
+            } else if provider_owns_conversation(state) && state.iteration > 0 {
+                // Provider-owned continuations send only the new delta. A
+                // later body filter may restore the original input, but it
+                // must not replace the accumulated tool result for this round.
+                reconciled_messages = Some(append_state_messages(live_input, state_messages));
             } else {
-                // Stateless and provider-owned continuations have no local
-                // history to prepend: the selected body's input is authoritative.
-                reconciled_messages = Some(live_input);
+                // Preserve later filters' input edits while retaining agentic
+                // results appended after the original stateless input.
+                reconciled_messages = Some(append_state_messages(live_input, appended_state_messages(state)));
             }
         }
         let messages = reconciled_messages.as_deref().unwrap_or(state_messages);
@@ -412,7 +421,34 @@ fn selected_input_messages(
     let value = serde_json::from_slice(selected_body_slice(body, member.value_start, member.value_end)?).map_err(
         |error| -> FilterError { format!("openai_responses_proxy: invalid selected input: {error}").into() },
     )?;
-    Ok(Some(normalize_input_value(Some(&value))))
+    Ok(Some(normalize_input_owned(value)))
+}
+
+/// Append state-owned messages that are not part of the original input.
+fn append_state_messages(
+    mut live_input: Vec<serde_json::Value>,
+    appended: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    if !appended.is_empty() && !live_input.ends_with(appended) {
+        live_input.extend(appended.iter().cloned());
+    }
+    live_input
+}
+
+/// Return messages appended after the original request input.
+fn appended_state_messages(state: &ResponsesState) -> &[serde_json::Value] {
+    let input_len = state.input.len();
+    if input_len == 0 {
+        return &state.messages;
+    }
+    let Some(input_start) = state
+        .messages
+        .windows(input_len)
+        .rposition(|window| window == state.input.as_slice())
+    else {
+        return &[];
+    };
+    state.messages.get(input_start + input_len..).unwrap_or_default()
 }
 
 /// Locate top-level members without materializing the complete JSON value.

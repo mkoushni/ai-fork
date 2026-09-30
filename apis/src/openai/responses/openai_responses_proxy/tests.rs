@@ -758,6 +758,46 @@ async fn selected_rebuild_preserves_later_input_filter_edit() {
 }
 
 #[tokio::test]
+async fn selected_rebuild_preserves_agentic_results_after_later_input_edit() {
+    let filter = make_filter();
+    let req = make_request(Method::POST, "/v1/responses");
+    let mut ctx = make_filter_context(&req);
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4.1",
+        "input": [{"type": "message", "role": "user", "content": "before filter"}]
+    }));
+    state.messages.push(json!({
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "tool result"
+    }));
+    state.mark_request_body_for_rebuild();
+    ctx.extensions.insert(state);
+    let mut body = Some(Bytes::from_static(
+        br#"{"model":"gpt-4.1","input":[{"type":"message","role":"user","content":"after filter"}]}"#,
+    ));
+
+    let action = filter
+        .on_selected_upstream_request_body(&mut ctx, &mut body)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(action, SelectedUpstreamBodyOutcome::Continue),
+        "selected rebuild should continue after preserving the filtered input and tool result"
+    );
+    let selected_backend_body: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        selected_backend_body["input"][0]["content"], "after filter",
+        "selected backend must receive the live input edit"
+    );
+    assert_eq!(
+        selected_backend_body["input"][1]["type"], "function_call_output",
+        "selected backend must retain the accumulated agentic tool result"
+    );
+}
+
+#[tokio::test]
 async fn selected_rebuild_keeps_selector_only_body_valid_when_adding_state_fields() {
     let filter = make_filter();
     let req = make_request(Method::POST, "/v1/responses");

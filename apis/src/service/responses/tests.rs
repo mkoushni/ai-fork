@@ -138,12 +138,17 @@ fn build_record_does_not_duplicate_output_already_in_state_messages() {
         "id": "cmp_provider",
         "encrypted_content": "provider-state"
     });
+    let message = json!({
+        "type": "message",
+        "role": "assistant",
+        "content": "continued"
+    });
     let response_object = json!({
         "id": "resp_compaction",
         "created_at": 1_719_900_000,
         "model": "gpt-4.1",
         "status": "completed",
-        "output": [compaction.clone()]
+        "output": [compaction.clone(), message.clone()]
     });
 
     let record = ResponsesService::build_record(
@@ -158,7 +163,8 @@ fn build_record_does_not_duplicate_output_already_in_state_messages() {
         record.messages,
         json!([
             {"role": "user", "content": "Start"},
-            {"type": "compaction", "id": "cmp_provider", "encrypted_content": "provider-state"}
+            {"type": "compaction", "id": "cmp_provider", "encrypted_content": "provider-state"},
+            {"type": "message", "role": "assistant", "content": "continued"}
         ]),
         "provider compaction must be persisted once for replay"
     );

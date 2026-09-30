@@ -1288,14 +1288,21 @@ fn normalize_input(body: &serde_json::Value) -> Vec<serde_json::Value> {
 
 /// Normalize one Responses API `input` value into a message array.
 pub(crate) fn normalize_input_value(input: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    input
+        .map(|input| normalize_input_owned(input.clone()))
+        .unwrap_or_default()
+}
+
+/// Normalize an owned `input` value without cloning array or object items.
+pub(crate) fn normalize_input_owned(input: serde_json::Value) -> Vec<serde_json::Value> {
     match input {
-        Some(serde_json::Value::Array(arr)) => arr.clone(),
-        Some(input @ serde_json::Value::Object(_)) => vec![input.clone()],
-        Some(serde_json::Value::String(s)) => {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(item) => vec![serde_json::Value::Object(item)],
+        serde_json::Value::String(s) => {
             vec![serde_json::json!({
                 "type": "message",
                 "role": "user",
-                "content": s,
+                "content": s
             })]
         },
         _ => Vec::new(),
