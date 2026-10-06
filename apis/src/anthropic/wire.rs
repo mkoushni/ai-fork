@@ -14,23 +14,23 @@ const ERROR_SERIALIZATION_FALLBACK: &[u8] = br#"{"type":"error","error":{"type":
 /// Error types allowed by the pinned Anthropic `ErrorType` schema.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ErrorType {
-    /// The request was invalid.
+    /// Wire value: `invalid_request_error`.
     InvalidRequest,
-    /// Authentication failed.
+    /// Wire value: `authentication_error`.
     Authentication,
-    /// The request was not permitted.
+    /// Wire value: `permission_error`.
     Permission,
-    /// The requested resource was not found.
+    /// Wire value: `not_found_error`.
     NotFound,
-    /// The request exceeded the rate limit.
+    /// Wire value: `rate_limit_error`.
     RateLimit,
-    /// The request timed out.
+    /// Wire value: `timeout_error`.
     Timeout,
-    /// The service is overloaded.
+    /// Wire value: `overloaded_error`.
     Overloaded,
-    /// An unexpected API failure occurred.
+    /// Wire value: `api_error`.
     Api,
-    /// The request could not be billed.
+    /// Wire value: `billing_error`.
     Billing,
 }
 
