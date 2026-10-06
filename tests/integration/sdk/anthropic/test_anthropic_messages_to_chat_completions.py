@@ -481,8 +481,8 @@ class TestResponseValidation:
             RecordingBackend.error_response_once = False
 
         error = excinfo.value
-        assert error.status_code == 500
-        assert error.body["error"]["type"] == "api_error"
+        assert error.status_code == 500, "an unrecognized upstream error must surface as HTTP 500"
+        assert error.body["error"]["type"] == "api_error", "the Anthropic error type must normalize to api_error"
 
     @pytest.mark.parametrize("kind", ["finish_reason", "refusal"])
     def test_untranslatable_success_fails_closed(self, anthropic_client, kind):
