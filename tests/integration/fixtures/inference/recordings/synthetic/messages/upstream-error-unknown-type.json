@@ -93,6 +93,7 @@
           "body": {
             "kind": "json",
             "value": {
+              "type": "error",
               "error": {
                 "message": "upstream failure with an unknown error type",
                 "type": "future_error"
