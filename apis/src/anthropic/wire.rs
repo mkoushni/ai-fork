@@ -50,22 +50,6 @@ impl ErrorType {
         }
     }
 
-    /// Parse a pinned Anthropic error type, rejecting future or provider-specific values.
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "invalid_request_error" => Self::InvalidRequest,
-            "authentication_error" => Self::Authentication,
-            "permission_error" => Self::Permission,
-            "not_found_error" => Self::NotFound,
-            "rate_limit_error" => Self::RateLimit,
-            "timeout_error" => Self::Timeout,
-            "overloaded_error" => Self::Overloaded,
-            "api_error" => Self::Api,
-            "billing_error" => Self::Billing,
-            _ => return None,
-        })
-    }
-
     /// Map an HTTP status to the nearest pinned Anthropic error type.
     ///
     /// Status-specific names such as `conflict_error` and `request_too_large`
@@ -83,6 +67,22 @@ impl ErrorType {
             500..=599 => Self::Api,
             _ => Self::InvalidRequest,
         }
+    }
+
+    /// Parse a pinned Anthropic error type, rejecting future or provider-specific values.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "invalid_request_error" => Self::InvalidRequest,
+            "authentication_error" => Self::Authentication,
+            "permission_error" => Self::Permission,
+            "not_found_error" => Self::NotFound,
+            "rate_limit_error" => Self::RateLimit,
+            "timeout_error" => Self::Timeout,
+            "overloaded_error" => Self::Overloaded,
+            "api_error" => Self::Api,
+            "billing_error" => Self::Billing,
+            _ => return None,
+        })
     }
 }
 

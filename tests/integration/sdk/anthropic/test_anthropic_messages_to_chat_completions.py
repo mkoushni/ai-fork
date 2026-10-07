@@ -89,6 +89,7 @@ class RecordingBackend(BaseHTTPRequestHandler):
             RecordingBackend.error_response_once = False
             reply = json.dumps(
                 {
+                    "type": "error",
                     "error": {
                         "message": "stubbed upstream failure",
                         "type": "future_error",
