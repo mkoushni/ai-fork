@@ -123,6 +123,8 @@ impl SseFrameParser {
                         StreamStart::CheckingBom(matched)
                     };
                     i += 1;
+                    self.scratch_bytes = self.buffered_bytes();
+                    self.check_buffer_limit()?;
                     continue;
                 }
 
@@ -472,6 +474,28 @@ mod tests {
             "a chunk-split leading BOM must not hide the first frame"
         );
         assert_eq!(frames[0].data, b"hello", "data after a split BOM should be preserved");
+    }
+
+    #[test]
+    fn split_utf8_bom_prefix_respects_buffer_limit() {
+        let mut parser = SseFrameParser::new(1);
+
+        assert!(
+            parser.parse_chunk(b"\xEF").unwrap().is_empty(),
+            "one retained BOM-prefix byte should fit the configured limit"
+        );
+        let result = parser.parse_chunk(b"\xBB");
+
+        assert!(
+            matches!(
+                result,
+                Err(SseParseError::BufferOverflow {
+                    buffered_bytes: 2,
+                    limit: 1
+                })
+            ),
+            "a matching split BOM prefix must not bypass the retained-byte limit"
+        );
     }
 
     #[test]
