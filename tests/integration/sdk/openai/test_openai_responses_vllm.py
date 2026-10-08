@@ -2616,7 +2616,14 @@ class TestOpenAIResponsesVLLM:
     def test_leading_bom_preserves_first_data_only_stream_event(
         self, witness_backend_client
     ):
-        """A leading UTF-8 BOM must not hide the first data-only SSE event."""
+        """A leading UTF-8 BOM must not hide the first data-only SSE event.
+
+        RFC 3629 Section 6 documents U+FEFF's UTF-8 BOM representation:
+        https://datatracker.ietf.org/doc/html/rfc3629#section-6
+        The requirement to strip one leading BOM while interpreting SSE comes
+        from the WHATWG HTML Standard Section 9.2.6:
+        https://html.spec.whatwg.org/multipage/server-sent-events.html#interpreting-an-event-stream
+        """
         client, _ = witness_backend_client
 
         events = list(
