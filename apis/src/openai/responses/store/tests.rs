@@ -4403,6 +4403,52 @@ async fn get_input_items_with_cursor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_input_items_duplicate_ids_paginate_to_later_items() {
+    let filter = make_filter();
+    let registry = init_store_and_seed(
+        "resp_duplicate_cursor",
+        "default",
+        json!([
+            {"id": "dup", "type": "item_reference"},
+            {"id": "dup", "type": "item_reference"},
+            {"id": "c", "type": "item_reference"}
+        ]),
+    )
+    .await;
+
+    let mut cursor: Option<String> = None;
+    let mut ids = Vec::new();
+    for expected_has_more in [true, true, false] {
+        let after = cursor
+            .as_ref()
+            .map_or_else(String::new, |value| format!("&after={value}"));
+        let req = crate::test_utils::make_request(
+            http::Method::GET,
+            &format!("/v1/responses/resp_duplicate_cursor/input_items?limit=1&order=asc{after}"),
+        );
+        let mut ctx = crate::test_utils::make_owned_filter_context(&req);
+        ctx.extensions.insert(registry.clone());
+        let rejection = expect_reject(filter.on_request(&mut ctx).await.unwrap());
+        assert_eq!(rejection.status, 200);
+        let body: serde_json::Value = serde_json::from_slice(rejection.body.as_deref().unwrap()).unwrap();
+        let item_id = body["data"]
+            .as_array()
+            .and_then(|data| data.first())
+            .and_then(|item| item["id"].as_str())
+            .unwrap();
+        let last_id = body["last_id"].as_str().unwrap();
+        assert_eq!(last_id, item_id, "last_id must project the final data item ID");
+        assert_eq!(body["has_more"], expected_has_more);
+        ids.push(item_id.to_owned());
+        cursor = Some(last_id.to_owned());
+    }
+
+    assert_eq!(ids.first().map(String::as_str), Some("dup"));
+    assert_ne!(ids.get(1), ids.first(), "the repeated ID must be normalized uniquely");
+    assert_eq!(ids.get(2).map(String::as_str), Some("c"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_input_items_with_malformed_cursor_returns_400() {
     let filter = make_filter();
     let registry = init_store_and_seed(

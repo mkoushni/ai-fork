@@ -376,3 +376,55 @@ fn list_input_items_paginates_stored_input() {
     assert_eq!(page.data.len(), 2, "the limit caps the page size");
     assert!(page.has_more, "more items remain beyond the first page");
 }
+
+#[test]
+fn list_input_items_duplicate_ids_reach_later_items() {
+    let alice = owner("alice");
+    let record = ResponseRecord {
+        input: json!([
+            {"id": "dup", "type": "item_reference"},
+            {"id": "dup", "type": "item_reference"},
+            {"id": "c", "type": "item_reference"}
+        ]),
+        ..sample_record(&alice, "resp_duplicate_ids")
+    };
+    let page_params = |cursor| ListParams {
+        cursor,
+        limit: 1,
+        order: Order::Ascending,
+    };
+
+    let first = list_input_items(&record, &page_params(None), IncludeFields::default()).unwrap();
+    assert_eq!(first.data.first().unwrap()["id"], "dup");
+    assert!(first.has_more);
+    let first_cursor = first.last_id().unwrap().to_owned();
+
+    let second = list_input_items(
+        &record,
+        &page_params(Some(first_cursor.clone())),
+        IncludeFields::default(),
+    )
+    .unwrap();
+    let second_cursor = second.last_id().unwrap().to_owned();
+    assert_ne!(
+        second_cursor, first_cursor,
+        "a repeated explicit ID needs a unique cursor"
+    );
+    assert_eq!(second.data.first().unwrap()["id"], second_cursor);
+    assert!(second.has_more);
+
+    let third = list_input_items(
+        &record,
+        &page_params(Some(second_cursor.clone())),
+        IncludeFields::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        third.data.first().unwrap()["id"],
+        "c",
+        "pagination must reach the later unique item"
+    );
+    assert_eq!(third.last_id(), Some("c"));
+    assert!(!third.has_more);
+    assert_ne!(second_cursor, "c");
+}

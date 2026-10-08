@@ -3,6 +3,8 @@
 
 //! Input item pagination for the `OpenAI` Responses API.
 
+use std::collections::HashSet;
+
 use serde::{Serialize, Serializer};
 
 use crate::{
@@ -215,8 +217,8 @@ pub(crate) fn list_input_items(
 /// `ItemResource[]`, so this function applies the same
 /// resource shape as the public API: string input becomes a
 /// synthetic user message resource, null input yields an empty list,
-/// and arrays/objects pass through with a stable synthetic `id`
-/// assigned to any item that doesn't already have one (see
+/// and arrays/objects pass through with a stable, unique synthetic `id`
+/// assigned to any item that lacks one or repeats an earlier ID (see
 /// [`ensure_stable_ids`]).
 fn normalize_input_items(record: &ResponseRecord) -> Vec<serde_json::Value> {
     let items = match &record.input {
@@ -234,26 +236,34 @@ fn is_compaction_item(item: &serde_json::Value) -> bool {
     item.get("type").and_then(serde_json::Value::as_str) == Some("compaction")
 }
 
-/// Assign a stable synthetic ID (`msg_{response_id}_input_{index}`) to
-/// any item missing one, keyed by its position in the original stored
-/// input order (before any order-based reversal).
+/// Ensure every object item has a stable, unique ID keyed by its position in
+/// the original stored input order (before any order-based reversal).
 ///
 /// Plain content-part objects — the common shape for array `input` —
 /// carry no `id` field. Without a synthetic one, `first_id`/`last_id`
 /// in the list response stay `null` and clients have no `after` value
 /// to resume pagination past the first page, even though `has_more`
-/// reports `true`.
+/// reports `true`. Repeated explicit IDs are equally ambiguous because
+/// cursor lookup cannot distinguish their occurrences; preserve the first
+/// and assign later occurrences a collision-safe synthetic ID.
 fn ensure_stable_ids(response_id: &str, items: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut reserved_ids: HashSet<String> = items.iter().filter_map(item_id).map(str::to_owned).collect();
+    let mut seen_explicit_ids = HashSet::new();
+
     items
         .into_iter()
         .enumerate()
         .map(|(index, mut item)| {
-            let has_string_id = item.get("id").and_then(serde_json::Value::as_str).is_some();
-            if !has_string_id && let Some(obj) = item.as_object_mut() {
-                obj.insert(
-                    "id".to_owned(),
-                    serde_json::Value::String(format!("msg_{response_id}_input_{index}")),
-                );
+            let needs_synthetic_id = item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|id| !seen_explicit_ids.insert(id.to_owned()));
+            if needs_synthetic_id && let Some(obj) = item.as_object_mut() {
+                let mut id = format!("msg_{response_id}_input_{index}");
+                while !reserved_ids.insert(id.clone()) {
+                    id.push('_');
+                }
+                obj.insert("id".to_owned(), serde_json::Value::String(id));
             }
             item
         })
