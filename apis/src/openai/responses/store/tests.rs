@@ -4429,7 +4429,7 @@ async fn get_input_items_duplicate_ids_paginate_to_later_items() {
         let mut ctx = crate::test_utils::make_owned_filter_context(&req);
         ctx.extensions.insert(registry.clone());
         let rejection = expect_reject(filter.on_request(&mut ctx).await.unwrap());
-        assert_eq!(rejection.status, 200);
+        assert_eq!(rejection.status, 200, "every valid duplicate-ID page must return 200");
         let body: serde_json::Value = serde_json::from_slice(rejection.body.as_deref().unwrap()).unwrap();
         let item_id = body["data"]
             .as_array()
@@ -4438,14 +4438,37 @@ async fn get_input_items_duplicate_ids_paginate_to_later_items() {
             .unwrap();
         let last_id = body["last_id"].as_str().unwrap();
         assert_eq!(last_id, item_id, "last_id must project the final data item ID");
-        assert_eq!(body["has_more"], expected_has_more);
+        assert_eq!(
+            body["has_more"], expected_has_more,
+            "has_more must track whether another input occurrence remains"
+        );
+        let next_cursor = body["next_cursor"].as_str();
+        if expected_has_more {
+            assert_ne!(
+                next_cursor,
+                Some(item_id),
+                "duplicate reference targets need a separate HTTP continuation cursor"
+            );
+        }
         ids.push(item_id.to_owned());
-        cursor = Some(last_id.to_owned());
+        cursor = next_cursor.map(str::to_owned);
     }
 
-    assert_eq!(ids.first().map(String::as_str), Some("dup"));
-    assert_ne!(ids.get(1), ids.first(), "the repeated ID must be normalized uniquely");
-    assert_eq!(ids.get(2).map(String::as_str), Some("c"));
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some("dup"),
+        "the first reference target must remain unchanged"
+    );
+    assert_eq!(
+        ids.get(1).map(String::as_str),
+        Some("dup"),
+        "the second reference must retain the same target ID"
+    );
+    assert_eq!(
+        ids.get(2).map(String::as_str),
+        Some("c"),
+        "the position cursor must make the later unique item reachable"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

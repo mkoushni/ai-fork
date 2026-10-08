@@ -2410,16 +2410,23 @@ class TestOpenAIResponsesVLLM:
             limit=1,
             order="asc",
         )
-        pages = list(islice(first.iter_pages(), 4))
-        assert len(pages) == 3, "SDK pagination must terminate after every stored item"
-        assert all(len(page.data) == 1 for page in pages)
+        pages = list(islice(first.iter_pages(), 3))
+        assert len(pages) == 2, (
+            "SDK pagination must advance past an ambiguous duplicate target and terminate"
+        )
+        assert all(len(page.data) == 1 for page in pages), (
+            "the requested one-item page size must remain stable during SDK iteration"
+        )
         ids = [page.data[0].id for page in pages]
-        assert ids[0] == "dup"
-        assert ids[1] != ids[0]
-        assert ids[2] == "c"
-        assert len(set(ids)) == len(ids)
-        assert all(page.last_id == page.data[-1].id for page in pages)
-        assert pages[-1].has_more is False
+        assert ids == ["dup", "c"], (
+            "SDK-derived after=dup must reach the later unique item without rewriting the reference target"
+        )
+        assert all(page.last_id == page.data[-1].id for page in pages), (
+            "the documented last_id field must remain the final returned item ID"
+        )
+        assert pages[-1].has_more is False, (
+            "SDK pagination must terminate after reaching the final unique item"
+        )
 
     def test_response_resource_not_found_errors(self, openai_client):
         missing_id = "resp_missing_sdk_integration"
