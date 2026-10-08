@@ -499,6 +499,27 @@ mod tests {
     }
 
     #[test]
+    fn malformed_leading_utf8_bom_prefix_is_preserved() {
+        let mut parser = SseFrameParser::new(MAX_BUF);
+
+        assert!(
+            parser.parse_chunk(b"\xEF\xBB").unwrap().is_empty(),
+            "a partial BOM prefix must wait for the next byte"
+        );
+        let frames = parser.parse_chunk(b"Xdata: hidden\n\ndata: visible\n\n").unwrap();
+
+        assert_eq!(
+            frames.len(),
+            1,
+            "a malformed BOM prefix must not expose the prefixed data field"
+        );
+        assert_eq!(
+            frames[0].data, b"visible",
+            "parsing must continue with the subsequent valid frame"
+        );
+    }
+
+    #[test]
     fn only_one_leading_utf8_bom_is_ignored() {
         let mut parser = SseFrameParser::new(MAX_BUF);
         let frames = parser
