@@ -114,7 +114,8 @@ impl InputItemPage {
             .or(self.next_cursor.as_deref())
     }
 
-    /// Return a separate continuation only when the last item ID is ambiguous.
+    /// Keep an ambiguous item ID separate from its occurrence cursor so direct
+    /// HTTP clients can paginate without changing a reference target.
     fn continuation_cursor(&self) -> Option<&str> {
         let cursor = self.next_cursor.as_deref()?;
         (Some(cursor) != self.last_id()).then_some(cursor)
@@ -314,9 +315,10 @@ fn cursor_offset(items: &[serde_json::Value], cursor: &str) -> Result<usize, Sto
 
 /// Return the offset after the final item whose `id` matches the cursor.
 ///
-/// Official SDKs derive `after` from the returned item ID instead of the
-/// separate continuation cursor. Selecting the final duplicate prevents that
-/// compatibility path from repeating the same page forever.
+/// Official SDKs derive `after` only from the returned item ID, so repeated IDs
+/// produce indistinguishable requests. Selecting the final duplicate keeps
+/// retries deterministic and prevents SDK iteration from repeating forever;
+/// lossless callers use the separate position-bearing continuation cursor.
 fn cursor_id_offset(items: &[serde_json::Value], cursor: &str) -> Option<usize> {
     items
         .iter()
@@ -358,7 +360,8 @@ fn unique_position_cursor(items: &[serde_json::Value], offset: usize) -> String 
     }
 }
 
-/// Decode a position-bearing cursor emitted for a duplicated item ID.
+/// Accept position cursors because a repeated reference target cannot identify
+/// which occurrence produced the continuation on its own.
 fn position_cursor_offset(cursor: &str) -> Result<Option<usize>, StoreError> {
     let Some(encoded) = cursor.strip_prefix(POSITION_CURSOR_PREFIX) else {
         return Ok(None);
