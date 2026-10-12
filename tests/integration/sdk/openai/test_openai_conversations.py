@@ -843,8 +843,12 @@ class TestOpenAIConversations:
             client.responses.delete("resp_delete_store_failure")
 
         error = exc_info.value
-        assert error.status_code == 500
-        assert error.response.headers["content-type"].startswith("application/json")
+        assert error.status_code == 500, (
+            "a DELETE store failure must return HTTP 500"
+        )
+        assert error.response.headers["content-type"].startswith(
+            "application/json"
+        ), "a DELETE store failure must return a JSON response"
         assert error.response.json() == {
             "error": {
                 "code": "server_error",
@@ -852,7 +856,7 @@ class TestOpenAIConversations:
                 "param": None,
                 "type": "server_error",
             }
-        }
+        }, "a DELETE store failure must return the standard server_error envelope"
 
     def test_conversation_create_no_metadata(self, openai_client):
         conversation = openai_client.conversations.create()
