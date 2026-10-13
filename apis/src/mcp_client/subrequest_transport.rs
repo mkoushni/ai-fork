@@ -1908,7 +1908,10 @@ mod tests {
 
     // -- Content-type classification -------------------------------------------
 
-    /// RFC 9110 §8.3.1 defines media types as case-insensitive type/subtype tokens.
+    /// [RFC 9110 Section 8.3.1] defines media types as case-insensitive
+    /// type/subtype tokens.
+    ///
+    /// [RFC 9110 Section 8.3.1]: https://datatracker.ietf.org/doc/html/rfc9110#section-8.3.1
     #[test]
     fn content_type_classification_is_case_insensitive_and_exact() {
         for value in [
