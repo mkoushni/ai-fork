@@ -51,7 +51,7 @@ use rmcp::{
 use sse_stream::{Error as SseError, Sse};
 
 use super::{McpClientError, McpDisplayUrl};
-use crate::{StateOwner, callout_target::AddressPolicy};
+use crate::{StateOwner, callout_target::AddressPolicy, is_event_stream_content_type};
 
 /// Wire byte ceiling for a control-plane MCP response.
 ///
@@ -1636,12 +1636,12 @@ fn map_prepare_error(error: &UrlTargetError) -> StreamableHttpError<McpTransport
 
 /// Whether a `Content-Type` value denotes JSON.
 fn is_json_content_type(value: &str) -> bool {
-    value.trim_start().starts_with("application/json")
-}
-
-/// Whether a `Content-Type` value denotes an SSE event stream.
-fn is_event_stream_content_type(value: &str) -> bool {
-    value.trim_start().starts_with("text/event-stream")
+    value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("application/json")
 }
 
 /// Parse a JSON-RPC error message from a response body, if it is one.
@@ -1846,13 +1846,31 @@ mod tests {
     // -- Content-type classification -------------------------------------------
 
     #[test]
-    fn content_type_classification_tolerates_parameters_and_whitespace() {
-        assert!(is_json_content_type("application/json"));
-        assert!(is_json_content_type(" application/json; charset=utf-8"));
-        assert!(!is_json_content_type("text/event-stream"));
-        assert!(is_event_stream_content_type("text/event-stream"));
-        assert!(is_event_stream_content_type(" text/event-stream; charset=utf-8"));
-        assert!(!is_event_stream_content_type("application/json"));
+    fn content_type_classification_is_case_insensitive_and_exact() {
+        for value in [
+            "application/json",
+            " Application/JSON; charset=utf-8",
+            "application/json ; charset=utf-8",
+        ] {
+            assert!(is_json_content_type(value), "expected JSON media type: {value}");
+        }
+        for value in ["application/jsonp", "application/json-patch+json", "text/event-stream"] {
+            assert!(!is_json_content_type(value), "expected non-JSON media type: {value}");
+        }
+
+        for value in [
+            "text/event-stream",
+            " Text/Event-Stream; charset=utf-8",
+            "text/event-stream ; charset=utf-8",
+        ] {
+            assert!(is_event_stream_content_type(value), "expected SSE media type: {value}");
+        }
+        for value in ["text/event-streamish", "text/event-stream+json", "application/json"] {
+            assert!(
+                !is_event_stream_content_type(value),
+                "expected non-SSE media type: {value}"
+            );
+        }
     }
 
     // -- Response-limit tiers (codex finding: response-limit regressions) -------
