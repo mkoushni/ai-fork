@@ -196,7 +196,9 @@ pub(crate) fn transform_response(body: &[u8], model: &str) -> Result<Vec<u8>, St
         "choices": choices,
     });
 
-    if let Some(usage) = obj.and_then(|o| o.get("usageMetadata"))
+    if let Some(usage) = obj
+        .and_then(|o| o.get("usageMetadata"))
+        .filter(|usage| usage.is_object())
         && let Some(response) = response.as_object_mut()
     {
         response.insert("usage".to_owned(), convert_usage(usage));
@@ -1519,6 +1521,15 @@ mod tests {
     #[test]
     fn missing_usage_is_omitted() {
         let body = br#"{"candidates": [{"content": {"parts": [{"text": "Hi"}]}, "finishReason": "STOP"}]}"#;
+        let output = transform_response(body, "gemini-1.5-pro").unwrap();
+        let parsed: Value = serde_json::from_slice(&output).unwrap();
+
+        assert!(parsed.get("usage").is_none());
+    }
+
+    #[test]
+    fn null_usage_is_omitted() {
+        let body = br#"{"candidates": [{"content": {"parts": [{"text": "Hi"}]}, "finishReason": "STOP"}], "usageMetadata": null}"#;
         let output = transform_response(body, "gemini-1.5-pro").unwrap();
         let parsed: Value = serde_json::from_slice(&output).unwrap();
 
