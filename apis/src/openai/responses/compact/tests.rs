@@ -1006,12 +1006,35 @@ fn compaction_source_accepts_text_only_messages_and_function_outputs() {
             "type": "function_call_output",
             "call_id": "call_1",
             "output": [
-                {"type": "output_text", "text": "pass"},
+                {"type": "output_text", "text": "pass", "annotations": [], "logprobs": []},
                 {"type": "text", "text": "word"}
             ]
         }),
     ];
     validate_compaction_source(messages.iter()).expect("text-only source must remain compactable");
+}
+
+#[test]
+fn compaction_source_rejects_text_part_semantic_metadata() {
+    for (field, value) in [
+        (
+            "annotations",
+            json!([{"type": "url_citation", "url": "https://example.test"}]),
+        ),
+        ("logprobs", json!([{"token": "hello", "logprob": -0.1}])),
+        ("prompt_cache_breakpoint", json!({"mode": "explicit"})),
+    ] {
+        let mut part = json!({"type": "output_text", "text": "hello"});
+        part[field] = value;
+        let messages = [json!({"type": "message", "role": "assistant", "content": [part]})];
+
+        let Err(FilterAction::Reject(rejection)) = validate_compaction_source(messages.iter()) else {
+            panic!("{field} must be rejected before compaction");
+        };
+        assert_eq!(rejection.status, 400);
+        let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
+        assert!(body.contains(field), "unexpected rejection: {body}");
+    }
 }
 
 #[test]

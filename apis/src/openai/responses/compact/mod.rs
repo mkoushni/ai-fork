@@ -384,12 +384,6 @@ impl CompactFilter {
         if previous_usage_total(state).is_some_and(|total| !exceeds_threshold(total, &config)) {
             return Ok(None);
         }
-        let Some((params, conversation_text)) = should_compact(state, &self.config.tiktoken_encoding)
-            .map_err(|msg| FilterAction::Reject(responses_error_rejection(400, "invalid_request_error", &msg)))?
-        else {
-            return Ok(None);
-        };
-        validate_reactive_compaction_source(state)?;
         if let Some(budget) = state.simple_budget.as_mut() {
             let bytes = count_json_bytes(&state.messages)
                 .and_then(|history| count_json_bytes(&state.request_body)?.checked_add(history))
@@ -401,6 +395,12 @@ impl CompactFilter {
                 return Err(reject_compaction_budget());
             }
         }
+        let Some((params, conversation_text)) = should_compact(state, &self.config.tiktoken_encoding)
+            .map_err(|msg| FilterAction::Reject(responses_error_rejection(400, "invalid_request_error", &msg)))?
+        else {
+            return Ok(None);
+        };
+        validate_reactive_compaction_source(state)?;
         self.execute_compaction(state, &params, &conversation_text).await
     }
 
@@ -1287,6 +1287,7 @@ fn validate_representable_text_field(item_idx: usize, field: &str, value: Option
                         ),
                     ));
                 }
+                validate_text_part_metadata(item_idx, field, part_idx, kind, part)?;
             }
             Ok(())
         },
@@ -1296,6 +1297,50 @@ fn validate_representable_text_field(item_idx: usize, field: &str, value: Option
             &format!("compaction cannot replace source item {item_idx}: {field} cannot be represented in the summary"),
         )),
     }
+}
+
+/// Reject text-part fields that the summary renderer would silently omit.
+///
+/// OpenAI output text commonly carries empty `annotations` and `logprobs`
+/// arrays, which contain no information and remain safe to collapse to text.
+/// Non-empty values and unknown extension fields are semantic metadata and
+/// therefore make the source unrepresentable.
+fn validate_text_part_metadata(
+    item_idx: usize,
+    field: &str,
+    part_idx: usize,
+    kind: &str,
+    part: &Value,
+) -> Result<(), FilterAction> {
+    let Some(object) = part.as_object() else {
+        return Err(reject_unrepresentable_part_metadata(
+            item_idx,
+            field,
+            part_idx,
+            "non-object part",
+        ));
+    };
+    for (key, value) in object {
+        let represented = matches!(key.as_str(), "type" | "text");
+        let empty_output_metadata = kind == "output_text"
+            && matches!(key.as_str(), "annotations" | "logprobs")
+            && (value.is_null() || value.as_array().is_some_and(Vec::is_empty));
+        if !represented && !empty_output_metadata {
+            return Err(reject_unrepresentable_part_metadata(item_idx, field, part_idx, key));
+        }
+    }
+    Ok(())
+}
+
+/// Build a rejection for semantic content-part metadata omitted by rendering.
+fn reject_unrepresentable_part_metadata(item_idx: usize, field: &str, part_idx: usize, key: &str) -> FilterAction {
+    reject_compact(
+        400,
+        "invalid_request_error",
+        &format!(
+            "compaction cannot replace source item {item_idx}: {field}[{part_idx}].{key} cannot be represented in the summary"
+        ),
+    )
 }
 
 /// Build the fail-closed rejection for a non-text conversation item.
@@ -1819,10 +1864,9 @@ fn extract_content(msg: &Value) -> Cow<'_, str> {
 /// no separator, matching how the Responses-to-Chat translation joins text
 /// (`convert_function_call_output` and the text-only content collapse, both
 /// joined with no separator), so `"pass"` + `"word"` reads as `"password"` just
-/// as the backend would see it. Non-text parts (images, files) are dropped
-/// because the summarizer input is text-only; the backend instead preserves a
-/// mixed-content message as a parts array, so such a message is rendered lossily
-/// here by design.
+/// as the backend would see it. The renderer itself remains text-only; callers
+/// must validate every item they will replace and may omit non-text content only
+/// from a current-turn tail that remains preserved verbatim.
 fn extract_text_parts(value: Option<&Value>) -> Cow<'_, str> {
     let Some(value) = value else {
         return Cow::Borrowed("");

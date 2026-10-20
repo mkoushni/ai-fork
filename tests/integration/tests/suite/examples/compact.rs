@@ -1292,6 +1292,21 @@ async fn compact_explicit_endpoint_rejects_non_text_content_before_callout() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_explicit_endpoint_rejects_output_text_annotations_before_callout() {
+    let (raw, callouts, rows) = run_inline_compact(
+        "compact_reject_output_annotations",
+        r#"{"model":"gpt-4.1","input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"source","annotations":[{"type":"url_citation","url":"https://example.test"}]}]}]}"#,
+    )
+    .await;
+    assert_rejected_400(&raw, "annotations");
+    assert_eq!(
+        callouts, 0,
+        "annotated text must not trigger a lossy summarization callout"
+    );
+    assert_eq!(rows, 0, "rejected annotated text must not be persisted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_explicit_endpoint_rejects_wrong_typed_input_scalar() {
     // A wrong-typed scalar input with no prior id must 400 with the type error
     // rather than the generic "input or previous_response_id" message.
