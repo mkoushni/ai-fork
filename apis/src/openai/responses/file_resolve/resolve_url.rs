@@ -134,6 +134,10 @@ pub(crate) fn safe_url_label(raw: &str) -> String {
         return "<invalid URL>".to_owned();
     };
 
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return "<unsupported URL scheme>".to_owned();
+    }
+
     url.origin().ascii_serialization()
 }
 
@@ -1406,6 +1410,13 @@ mod tests {
     fn safe_url_label_handles_invalid_url() {
         let label = safe_url_label("not a url");
         assert_eq!(label, "<invalid URL>", "invalid URL should return placeholder");
+    }
+
+    #[test]
+    fn safe_url_label_does_not_resolve_unsupported_blob_origin() {
+        let deeply_nested_blob_url = format!("{}https://example.com/secret", "blob:".repeat(15_000));
+
+        assert_eq!(safe_url_label(&deeply_nested_blob_url), "<unsupported URL scheme>");
     }
 
     // validate_file_url tests
