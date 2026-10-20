@@ -1015,6 +1015,34 @@ fn compaction_source_accepts_text_only_messages_and_function_outputs() {
 }
 
 #[test]
+fn compaction_source_accepts_renderable_compaction_summary() {
+    let messages = [build_compaction_item(
+        "compact_prior",
+        "Prior context.",
+        DEFAULT_SUMMARY_PREFIX,
+    )];
+
+    validate_compaction_source(messages.iter()).expect("a non-empty UTF-8 compaction summary is representable");
+}
+
+#[test]
+fn compaction_source_rejects_unrenderable_compaction_summaries() {
+    for encrypted_content in ["not-valid-base64", "", "/w=="] {
+        let messages = [json!({
+            "type": "compaction",
+            "encrypted_content": encrypted_content
+        })];
+        let Err(FilterAction::Reject(rejection)) = validate_compaction_source(messages.iter()) else {
+            panic!("unrenderable compaction content must be rejected: {encrypted_content:?}");
+        };
+        assert_eq!(rejection.status, 400);
+        let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
+        assert!(body.contains("compaction"), "unexpected rejection: {body}");
+        assert!(body.contains("cannot be represented"), "unexpected rejection: {body}");
+    }
+}
+
+#[test]
 fn compaction_source_rejects_text_part_semantic_metadata() {
     for (field, value) in [
         (

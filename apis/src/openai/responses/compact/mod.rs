@@ -1237,7 +1237,9 @@ where
     for (idx, item) in messages.into_iter().enumerate() {
         let item = &*item;
         match item.get("type").and_then(Value::as_str) {
-            Some("function_call" | "compaction") => {},
+            Some("function_call") => {},
+            Some("compaction") if decode_compaction_summary(item).is_some() => {},
+            Some("compaction") => return Err(reject_unrepresentable_item(idx, "compaction")),
             Some("function_call_output") => {
                 validate_representable_text_field(idx, "output", item.get("output"))?;
             },
@@ -1819,21 +1821,20 @@ fn append_line(buf: &mut String, label: &str, text: &str) {
     buf.push_str(text);
 }
 
-/// Append a compaction item's summary to the buffer.
+/// Decode a non-empty UTF-8 compaction summary from `encrypted_content`.
 ///
-/// Decodes `encrypted_content` and borrows the result as `&str` directly,
-/// avoiding the `String::from_utf8` conversion that would copy the buffer.
+/// `String::from_utf8` reuses the decoded byte allocation, so validation and
+/// rendering share one definition of representability without another copy.
+fn decode_compaction_summary(msg: &Value) -> Option<String> {
+    let encoded = msg.get("encrypted_content").and_then(Value::as_str)?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    String::from_utf8(decoded).ok().filter(|summary| !summary.is_empty())
+}
+
+/// Append a representable compaction item's summary to the buffer.
 fn append_compaction_summary(buf: &mut String, msg: &Value) {
-    let Some(encoded) = msg.get("encrypted_content").and_then(Value::as_str) else {
-        return;
-    };
-    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-        return;
-    };
-    if let Ok(summary) = std::str::from_utf8(&decoded)
-        && !summary.is_empty()
-    {
-        append_line(buf, "[previous context summary]", summary);
+    if let Some(summary) = decode_compaction_summary(msg) {
+        append_line(buf, "[previous context summary]", &summary);
     }
 }
 

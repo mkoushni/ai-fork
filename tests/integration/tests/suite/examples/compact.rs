@@ -1630,6 +1630,24 @@ async fn compact_explicit_endpoint_rejects_null_compaction_encrypted_content() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_explicit_endpoint_rejects_unrenderable_compaction_content() {
+    let (raw, callouts, rows) = run_inline_compact(
+        "compact_reject_unrenderable_encrypted_content",
+        r#"{"model":"gpt-4.1","input":[{"type":"compaction","encrypted_content":"provider-opaque-state"}]}"#,
+    )
+    .await;
+    assert_rejected_400(&raw, "item type `compaction` cannot be represented");
+    assert_eq!(
+        callouts, 0,
+        "unrenderable compaction content must not trigger a summarization callout"
+    );
+    assert_eq!(
+        rows, 0,
+        "unrenderable compaction content must not persist a replacement"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_explicit_endpoint_rejects_null_item_type() {
     // Issue #1403 follow-up: an explicit null item `type` must 400 rather than be
     // read as "omitted" and silently reinterpreted as a message through the graph.
