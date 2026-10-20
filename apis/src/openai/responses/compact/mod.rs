@@ -384,6 +384,12 @@ impl CompactFilter {
         if previous_usage_total(state).is_some_and(|total| !exceeds_threshold(total, &config)) {
             return Ok(None);
         }
+        let Some((params, conversation_text)) = should_compact(state, &self.config.tiktoken_encoding)
+            .map_err(|msg| FilterAction::Reject(responses_error_rejection(400, "invalid_request_error", &msg)))?
+        else {
+            return Ok(None);
+        };
+        validate_reactive_compaction_source(state)?;
         if let Some(budget) = state.simple_budget.as_mut() {
             let bytes = count_json_bytes(&state.messages)
                 .and_then(|history| count_json_bytes(&state.request_body)?.checked_add(history))
@@ -395,14 +401,6 @@ impl CompactFilter {
                 return Err(reject_compaction_budget());
             }
         }
-        let (params, conversation_text) = match should_compact(state, &self.config.tiktoken_encoding) {
-            Ok(Some(pair)) => pair,
-            Ok(None) => return Ok(None),
-            Err(msg) => {
-                let rej = responses_error_rejection(400, "invalid_request_error", &msg);
-                return Err(FilterAction::Reject(rej));
-            },
-        };
         self.execute_compaction(state, &params, &conversation_text).await
     }
 
@@ -431,9 +429,8 @@ impl CompactFilter {
         let mut req = parse_compact_request_body(body)?;
         let (store, owner) = resolve_store_and_owner(ctx)?;
         let messages = collect_compact_messages(&store, &mut req, &mut budget).await?;
-        if let Some(budget) = budget.as_mut() {
-            reserve_compact_json(budget, &messages, COMPACTION_SOURCE_MULTIPLIER)?;
-        }
+        validate_compaction_source(messages.iter())?;
+        reserve_explicit_compact_source(budget.as_mut(), &messages)?;
         let writer = CompactionWriter {
             filter: self,
             ctx,
@@ -1225,6 +1222,91 @@ fn stored_message_array(messages: Value) -> Vec<Value> {
         Value::Array(arr) => arr,
         _ => Vec::new(),
     }
+}
+
+/// Reject source items whose meaning the text-only summarizer cannot retain.
+///
+/// Syntax validation deliberately accepts all Responses content kinds. This
+/// separate check runs only once compaction will replace the source, preventing
+/// images, files, audio, and other non-text items from being silently discarded.
+fn validate_compaction_source<I>(messages: I) -> Result<(), FilterAction>
+where
+    I: IntoIterator,
+    I::Item: std::ops::Deref<Target = Value>,
+{
+    for (idx, item) in messages.into_iter().enumerate() {
+        let item = &*item;
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call" | "compaction") => {},
+            Some("function_call_output") => {
+                validate_representable_text_field(idx, "output", item.get("output"))?;
+            },
+            Some("message") => {
+                validate_representable_text_field(idx, "content", item.get("content"))?;
+            },
+            None if item.get("role").is_some() => {
+                validate_representable_text_field(idx, "content", item.get("content"))?;
+            },
+            Some(kind) => return Err(reject_unrepresentable_item(idx, kind)),
+            None if item.get("id").is_some() => return Err(reject_unrepresentable_item(idx, "item_reference")),
+            None => return Err(reject_unrepresentable_item(idx, "untyped non-message")),
+        }
+    }
+    Ok(())
+}
+
+/// Validate only the prefix that [`replace_messages`] will discard.
+fn validate_reactive_compaction_source(state: &ResponsesState) -> Result<(), FilterAction> {
+    let replaced_len = state.messages.len().saturating_sub(state.input.len());
+    validate_compaction_source(state.messages.iter().take(replaced_len))
+}
+
+/// Charge the explicit endpoint for retaining its validated source history.
+fn reserve_explicit_compact_source(budget: Option<&mut SimpleBudget>, messages: &[Value]) -> Result<(), FilterAction> {
+    if let Some(budget) = budget {
+        reserve_compact_json(budget, &messages, COMPACTION_SOURCE_MULTIPLIER)?;
+    }
+    Ok(())
+}
+
+/// A compaction text field is representable only when every part is textual.
+fn validate_representable_text_field(item_idx: usize, field: &str, value: Option<&Value>) -> Result<(), FilterAction> {
+    match value {
+        Some(Value::String(_)) => Ok(()),
+        Some(Value::Array(parts)) => {
+            for (part_idx, part) in parts.iter().enumerate() {
+                let kind = part.get("type").and_then(Value::as_str).unwrap_or("unknown");
+                if !matches!(kind, "input_text" | "output_text" | "text")
+                    || !matches!(part.get("text"), Some(Value::String(_)))
+                {
+                    return Err(reject_compact(
+                        400,
+                        "invalid_request_error",
+                        &format!(
+                            "compaction cannot replace source item {item_idx}: {field}[{part_idx}] has non-text type `{kind}` that cannot be represented in the summary"
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        },
+        _ => Err(reject_compact(
+            400,
+            "invalid_request_error",
+            &format!("compaction cannot replace source item {item_idx}: {field} cannot be represented in the summary"),
+        )),
+    }
+}
+
+/// Build the fail-closed rejection for a non-text conversation item.
+fn reject_unrepresentable_item(item_idx: usize, kind: &str) -> FilterAction {
+    reject_compact(
+        400,
+        "invalid_request_error",
+        &format!(
+            "compaction cannot replace source item {item_idx}: item type `{kind}` cannot be represented in the summary"
+        ),
+    )
 }
 
 /// Borrows everything needed to build and persist an explicit compaction
