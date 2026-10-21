@@ -11258,6 +11258,7 @@ class TestFileResolveOutboundChain:
     def test_file_url_rejects_cloud_metadata(self, file_resolve_stub_env):
         """Private-origin opt-ins must not grant access to metadata services."""
         client, _, backend, _ = file_resolve_stub_env
+        path_secret = "PATH_BEARER_SECRET"
 
         with pytest.raises(PermissionDeniedError) as exc_info:
             client.responses.create(
@@ -11270,7 +11271,8 @@ class TestFileResolveOutboundChain:
                             {
                                 "type": "input_file",
                                 "file_url": (
-                                    "http://169.254.169.254/latest/meta-data/"
+                                    "http://169.254.169.254/"
+                                    f"{path_secret}/latest/meta-data/"
                                 ),
                             }
                         ],
@@ -11283,6 +11285,9 @@ class TestFileResolveOutboundChain:
         assert "blocked by security policy" in str(
             exc_info.value
         ), "metadata file URLs should report the security-policy rejection"
+        assert path_secret not in str(
+            exc_info.value
+        ), "credential-bearing URL paths must not appear in client errors"
         assert backend.captured == [], "blocked metadata requests must not reach the backend"
 
 
