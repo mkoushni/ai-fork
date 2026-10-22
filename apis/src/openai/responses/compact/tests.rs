@@ -977,7 +977,7 @@ fn compaction_source_rejects_non_text_content_parts() {
         let Err(FilterAction::Reject(rejection)) = validate_compaction_source(messages.iter()) else {
             panic!("{kind} must be rejected before compaction");
         };
-        assert_eq!(rejection.status, 400);
+        assert_eq!(rejection.status, 400, "{kind} rejection must return HTTP 400");
         let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
         assert!(body.contains("non-text"), "unexpected rejection: {body}");
         assert!(body.contains(kind), "unexpected rejection: {body}");
@@ -993,7 +993,10 @@ fn compaction_source_rejects_mixed_text_and_image_content() {
             {"type": "input_image", "image_url": "https://example.test/image.png"}
         ]
     })];
-    assert!(validate_compaction_source(messages.iter()).is_err());
+    assert!(
+        validate_compaction_source(messages.iter()).is_err(),
+        "mixed text and image content must be rejected"
+    );
 }
 
 #[test]
@@ -1037,7 +1040,10 @@ fn compaction_source_rejects_unrenderable_compaction_summaries() {
         let Err(FilterAction::Reject(rejection)) = validate_compaction_source(messages.iter()) else {
             panic!("unrenderable compaction content must be rejected: {encrypted_content:?}");
         };
-        assert_eq!(rejection.status, 400);
+        assert_eq!(
+            rejection.status, 400,
+            "unrenderable compaction content must return HTTP 400"
+        );
         let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
         assert!(body.contains("compaction"), "unexpected rejection: {body}");
         assert!(body.contains("cannot be represented"), "unexpected rejection: {body}");
@@ -1061,7 +1067,7 @@ fn compaction_source_rejects_text_part_semantic_metadata() {
         let Err(FilterAction::Reject(rejection)) = validate_compaction_source(messages.iter()) else {
             panic!("{field} must be rejected before compaction");
         };
-        assert_eq!(rejection.status, 400);
+        assert_eq!(rejection.status, 400, "{field} rejection must return HTTP 400");
         let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
         assert!(body.contains(field), "unexpected rejection: {body}");
     }
@@ -1078,7 +1084,10 @@ fn reactive_source_validation_checks_only_replaced_history() {
 
     let mut rejected = ResponsesState::from_request_body(json!({"model": "gpt-4o", "input": "new turn"}));
     rejected.messages = vec![image.clone(), text.clone()].into();
-    assert!(validate_reactive_compaction_source(&rejected).is_err());
+    assert!(
+        validate_reactive_compaction_source(&rejected).is_err(),
+        "non-text replaced history must be rejected"
+    );
 
     let mut accepted = ResponsesState::from_request_body(json!({
         "model": "gpt-4o",
@@ -1115,7 +1124,7 @@ async fn reactive_compaction_rejects_non_text_history_before_callout() {
     let Err(FilterAction::Reject(rejection)) = filter.check_and_summarize(&mut state).await else {
         panic!("non-text history must fail closed before the summarization callout");
     };
-    assert_eq!(rejection.status, 400);
+    assert_eq!(rejection.status, 400, "non-text history must return HTTP 400");
     let body = String::from_utf8_lossy(rejection.body.as_deref().unwrap_or_default());
     assert!(body.contains("input_image"), "unexpected rejection: {body}");
 }

@@ -429,6 +429,36 @@ impl CompactFilter {
         let mut req = parse_compact_request_body(body)?;
         let (store, owner) = resolve_store_and_owner(ctx)?;
         let messages = collect_compact_messages(&store, &mut req, &mut budget).await?;
+        let collected = CollectedExplicitCompact {
+            store,
+            owner,
+            req,
+            messages,
+            budget,
+        };
+        Box::pin(self.finish_explicit_compact(ctx, collected)).await
+    }
+
+    /// Validate, summarize, and persist an already collected compact request.
+    ///
+    /// Keeping this phase separate prevents its callout and persistence futures
+    /// from sharing one stack frame with the stored-history lookup future.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validation, callout, and persistence form one post-lookup phase"
+    )]
+    async fn finish_explicit_compact(
+        &self,
+        ctx: &HttpFilterContext<'_>,
+        collected: CollectedExplicitCompact,
+    ) -> Result<FilterAction, FilterAction> {
+        let CollectedExplicitCompact {
+            store,
+            owner,
+            req,
+            messages,
+            mut budget,
+        } = collected;
         validate_compaction_source(messages.iter())?;
         reserve_explicit_compact_source(budget.as_mut(), &messages)?;
         let writer = CompactionWriter {
@@ -787,6 +817,20 @@ struct ExplicitCompactRequest {
     previous_response_id: Option<String>,
     /// Optional instructions to prepend to the summarization prompt.
     instructions: Option<String>,
+}
+
+/// Owned inputs for the post-lookup explicit compaction phase.
+struct CollectedExplicitCompact {
+    /// Owner-scoped destination store.
+    store: OwnerScopedResponseStore,
+    /// Authenticated owner recorded with the compacted response.
+    owner: StateOwner,
+    /// Parsed explicit compaction request.
+    req: ExplicitCompactRequest,
+    /// Stored and inline source messages in conversation order.
+    messages: Vec<Value>,
+    /// Request-wide allocation budget, when configured.
+    budget: Option<SimpleBudget>,
 }
 
 /// Parse and validate the `POST /v1/responses/compact` body.
