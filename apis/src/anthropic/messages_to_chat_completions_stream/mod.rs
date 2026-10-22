@@ -1353,11 +1353,18 @@ mod tests {
                 !output.contains("text_delta"),
                 "{description} must not emit lossy content"
             );
-            assert!(!output.contains("event: message_stop"));
+            assert!(
+                !output.contains("event: message_stop"),
+                "{description} must terminate without message_stop: {output}"
+            );
 
             let mut trailing_body = Some(Bytes::from_static(b"data: [DONE]\n\n"));
             drop(filter.on_response_body(&mut ctx, &mut trailing_body, true).unwrap());
-            assert_eq!(trailing_body, Some(Bytes::new()));
+            assert_eq!(
+                trailing_body,
+                Some(Bytes::new()),
+                "{description} must suppress events after the terminal error"
+            );
         }
     }
 

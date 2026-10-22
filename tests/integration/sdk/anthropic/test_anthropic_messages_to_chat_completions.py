@@ -672,11 +672,19 @@ class TestStreamingResponseValidation:
             RecordingBackend.untranslatable_stream_once = None
 
         error = excinfo.value
-        assert error.body.get("type") == "error"
-        assert error.body.get("error", {}).get("type") == "api_error"
-        assert not any(event.type == "message_stop" for event in events)
+        assert error.body.get("type") == "error", (
+            f"{kind} must use the Anthropic error envelope"
+        )
+        assert error.body.get("error", {}).get("type") == "api_error", (
+            f"{kind} must surface as an Anthropic api_error"
+        )
+        assert not any(event.type == "message_stop" for event in events), (
+            f"{kind} must terminate without message_stop"
+        )
         [upstream] = RecordingBackend.bodies
-        assert upstream["stream"] is True
+        assert upstream["stream"] is True, (
+            f"{kind} must be exercised through a forwarded streaming request"
+        )
 
 
 DEGRADED_HEADER = "x-degraded-features"
