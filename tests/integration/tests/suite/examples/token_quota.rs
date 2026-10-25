@@ -241,7 +241,7 @@ filter_chains:
           - name: default
             algorithm: sliding_window
             window: 1h
-            capacity: 100
+            capacity: 90
             reserved_tokens: 50
       - filter: token_quota
         formula_id: weighted-quota-v1

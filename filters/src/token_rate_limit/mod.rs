@@ -2208,7 +2208,10 @@ impl TokenRateLimitFilter {
             validate_rule_estimates_fit_hierarchy(&cfg.rules, levels)?;
         }
         let key_spec = compile_key_spec(cfg.key)?;
-        let key_fingerprint = key_spec.config_fingerprint();
+        let mut key_fingerprint = key_spec.config_fingerprint();
+        if cfg.use_token_quota {
+            key_fingerprint.push_str(":quota");
+        }
         let rules = cfg
             .rules
             .into_iter()

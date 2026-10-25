@@ -2886,7 +2886,7 @@ async fn shared_quota_metadata_is_the_authoritative_reconciliation_value() {
     // result (29) leaves enough room for the next 50-unit reservation.
     let yaml = single_rule_yaml_with(
         "use_token_quota: true",
-        "algorithm: sliding_window\nwindow: 1h\ncapacity: 100\nreserved_tokens: 50",
+        "algorithm: sliding_window\nwindow: 1h\ncapacity: 90\nreserved_tokens: 50",
     );
     let filter = TokenRateLimitFilter::from_config(&yaml).unwrap();
     let req = crate::test_utils::make_request(http::Method::POST, "/v1/chat");
@@ -2901,7 +2901,7 @@ async fn shared_quota_metadata_is_the_authoritative_reconciliation_value() {
     let mut next_ctx = crate::test_utils::make_filter_context(&req);
     assert!(
         matches!(filter.on_request(&mut next_ctx).await.unwrap(), FilterAction::Continue),
-        "shared quota 29 of 100 should leave room for another 50-unit reservation"
+        "shared quota 29 of 90 should leave room for another 50-unit reservation"
     );
 }
 

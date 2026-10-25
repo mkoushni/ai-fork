@@ -240,7 +240,7 @@ test-integration:
 	cargo build -p praxis-ai-proxy --bin praxis-ai --features openai-all,store-all,$(INTEGRATION_EXPERIMENTAL_FEATURES)
 	PRAXIS_AI_BIN=$(abspath $(or $(CARGO_TARGET_DIR),target)/debug/praxis-ai) \
 	cargo test -p praxis-tests-integration --features openai-all,store-all,$(INTEGRATION_EXPERIMENTAL_FEATURES) --test suite \
-		-- examples::azure_ad examples::gcp_adc examples::lakera_guard examples::token_rate_limit examples::token_ceiling examples::inflight_tracking \
+		-- examples::azure_ad examples::gcp_adc examples::lakera_guard examples::token_rate_limit examples::token_quota examples::token_ceiling examples::inflight_tracking \
 		examples::vertex_anthropic \
 		$(if $(V),--nocapture)
 
