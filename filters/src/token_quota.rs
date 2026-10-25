@@ -67,15 +67,28 @@ fn default_unit() -> String {
     "quota_units".to_owned()
 }
 
-/// Evaluates a configured CEL formula over final normalized token usage.
+/// Evaluates a configured CEL formula over final normalized token usage to
+/// compute a weighted cost (quota units) for downstream rate limiters and
+/// metering services.
 ///
-/// This experimental filter models the intended PPE input/output contract
-/// while PPE token-input exposure and metadata export are still being settled.
-/// Its restricted evaluator is intentionally not a general policy surface.
+/// This experimental filter bridges the gap between raw token extraction
+/// (`token_count`) and quota enforcement (`token_rate_limit`) while the Praxis
+/// Policy Engine (PPE) is being built. It models the intended PPE
+/// input/output contract. Its restricted evaluator is intentionally not a
+/// general policy surface—it handles only the `usage` and `context` objects
+/// required for token-based quota calculation.
 ///
-/// Place this filter before `token_count` in the request chain. Response
-/// filters run in reverse order, so `token_count` publishes the complete
-/// `token.*` snapshot before this filter evaluates it.
+/// **Result semantics**: The result is a weighted cost expressed in quota
+/// units (not currency). Different token types have different weights based
+/// on provider economics: cached input is ~10x cheaper than uncached, cache
+/// creation has overhead, reasoning tokens may be nested or additive. This
+/// weighted cost is exposed via filter metadata (`token.quota.value`) for
+/// rate limiters to reconcile reservations and metering services to charge
+/// appropriately. See issue #117 for the formula design.
+///
+/// **Filter ordering**: Declare this filter before `token_count` in the request
+/// chain. Response filters run in reverse order, so `token_count` publishes
+/// the complete `token.*` snapshot before this filter evaluates it.
 ///
 /// # CEL inputs
 ///
@@ -93,7 +106,8 @@ fn default_unit() -> String {
 /// provider total.
 ///
 /// `context` exposes bounded routing facts: `route`, `backend`, `provider`,
-/// and `model`. Missing facts are empty strings.
+/// and `model`. Missing facts are empty strings. Future work will use these to
+/// select per-route, per-backend, or per-model formula overrides.
 ///
 /// The expression must return a non-negative number. Fractional results are
 /// rounded up so enforcement never undercharges. Invalid runtime results leave
@@ -384,8 +398,8 @@ mod tests {
     use crate::{
         test_utils::{make_filter_context, make_request},
         token_usage::{
-            META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_STATUS,
-            META_TOKEN_TOTAL, TOKEN_STATUS_OVERFLOW,
+            META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_REASONING,
+            META_TOKEN_STATUS, META_TOKEN_TOTAL, TOKEN_STATUS_OVERFLOW,
         },
     };
 
@@ -551,6 +565,40 @@ mod tests {
             assert_eq!(ctx.get_metadata(META_TOKEN_QUOTA_STATUS), Some(STATUS_INVALID_RESULT));
             assert!(ctx.get_metadata(META_TOKEN_QUOTA_VALUE).is_none());
         }
+    }
+
+    #[test]
+    fn cel_parity_with_legacy_weighted_cost() {
+        // This test verifies that a CEL formula computing the same logic as
+        // token_rate_limit's weighted_cost produces identical results.
+        // Formula: (uncached × 1.0) + (cache_read × 0.1) + (cache_write × 2.4) +
+        //          (visible × 1.0) + (reasoning × 1.0) + (unclassified × 1.0)
+        let filter = filter(
+            "double(usage.input.uncached) * 1.0 \
+             + double(usage.input.cache_read) * 0.1 \
+             + double(usage.input.cache_write) * 2.4 \
+             + double(usage.output.visible) * 1.0 \
+             + double(usage.output.reasoning) * 1.0 \
+             + double(usage.unclassified) * 1.0",
+        );
+        let request = make_request(Method::POST, "/v1/chat/completions");
+        let mut ctx = make_filter_context(&request);
+        // Example: input=100, cache_read=10, cache_write=5, output=50, reasoning=10
+        // Uncached = 100 - 10 - 5 = 85
+        // Visible = 50 - 10 = 40
+        // Cost = (85 × 1) + (10 × 0.1) + (5 × 2.4) + (40 × 1) + (10 × 1) + (0 × 1)
+        //      = 85 + 1 + 12 + 40 + 10 + 0 = 148
+        ctx.set_metadata(META_TOKEN_INPUT, "100");
+        ctx.set_metadata(META_TOKEN_OUTPUT, "50");
+        ctx.set_metadata(META_TOKEN_TOTAL, "150");
+        ctx.set_metadata(META_TOKEN_CACHE_READ, "10");
+        ctx.set_metadata(META_TOKEN_CACHE_WRITE, "5");
+        ctx.set_metadata(META_TOKEN_REASONING, "10");
+        assert!(matches!(
+            filter.on_response_body(&mut ctx, &mut None, true).unwrap(),
+            FilterAction::Continue
+        ));
+        assert_eq!(ctx.get_metadata(META_TOKEN_QUOTA_VALUE), Some("148"));
     }
 
     #[test]

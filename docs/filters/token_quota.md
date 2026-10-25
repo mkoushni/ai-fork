@@ -3,13 +3,15 @@
 
 # `token_quota`
 
-Evaluates a configured CEL formula over final normalized token usage.
+Evaluates a configured CEL formula over final normalized token usage to compute a weighted cost (quota units) for downstream rate limiters and metering services.
 
 ## Configuration Notes
 
-This experimental filter models the intended PPE input/output contract while PPE token-input exposure and metadata export are still being settled. Its restricted evaluator is intentionally not a general policy surface.
+This experimental filter bridges the gap between raw token extraction (`token_count`) and quota enforcement (`token_rate_limit`) while the Praxis Policy Engine (PPE) is being built. It models the intended PPE input/output contract. Its restricted evaluator is intentionally not a general policy surface—it handles only the `usage` and `context` objects required for token-based quota calculation.
 
-Place this filter before `token_count` in the request chain. Response filters run in reverse order, so `token_count` publishes the complete `token.*` snapshot before this filter evaluates it.
+**Result semantics**: The result is a weighted cost expressed in quota units (not currency). Different token types have different weights based on provider economics: cached input is ~10x cheaper than uncached, cache creation has overhead, reasoning tokens may be nested or additive. This weighted cost is exposed via filter metadata (`token.quota.value`) for rate limiters to reconcile reservations and metering services to charge appropriately. See issue #117 for the formula design.
+
+**Filter ordering**: Declare this filter before `token_count` in the request chain. Response filters run in reverse order, so `token_count` publishes the complete `token.*` snapshot before this filter evaluates it.
 
 ## Configuration
 
