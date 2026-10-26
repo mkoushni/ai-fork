@@ -1,7 +1,8 @@
 # Token quota policy
 #
-# `token_count` supplies trusted normalized usage to PPE. The policy document
-# selects the quota plugin and formula; downstream filters consume PPE output.
+# PPE evaluates a weighted quota over the final normalized token usage snapshot.
+# `token_count` supplies trusted usage; the policy document selects the quota
+# plugin and formula; downstream filters consume PPE output.
 #
 # Run from the repository root with:
 #   cargo run -p praxis-ai-proxy --features token-quota-filter -- \

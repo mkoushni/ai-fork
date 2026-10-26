@@ -142,6 +142,7 @@ pub(crate) struct TokenQuotaResult {
 }
 
 /// Minimal PPE decision needed by rate-limit reconciliation.
+#[cfg(feature = "token-rate-limit-filter")]
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub(crate) struct TokenQuotaDecision {
     /// Evaluation outcome.
@@ -391,6 +392,7 @@ pub(crate) fn result(ctx: &HttpFilterContext<'_>) -> Option<TokenQuotaResult> {
 }
 
 /// Read only the quota decision needed by rate-limit reconciliation.
+#[cfg(feature = "token-rate-limit-filter")]
 pub(crate) fn decision(ctx: &HttpFilterContext<'_>) -> Option<TokenQuotaDecision> {
     ctx.extensions
         .get::<PolicyResponseOutput>()
