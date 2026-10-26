@@ -57,7 +57,7 @@ fn example_config_token_quota() {
     );
 }
 
-/// The final quota value and its audit metadata are reusable by a downstream filter.
+/// The final quota value and its audit fields are reusable by a downstream filter.
 #[test]
 fn weighted_quota_is_written_back_after_token_count() {
     let response = r#"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":40,"total_tokens":160,"prompt_tokens_details":{"cached_tokens":90,"cache_write_tokens":20}}}"#;
@@ -82,7 +82,7 @@ fn weighted_quota_is_written_back_after_token_count() {
 
     let observed = receiver
         .recv_timeout(Duration::from_secs(5))
-        .expect("observer should receive quota metadata");
+        .expect("observer should receive PPE quota output");
     assert_eq!(
         observed,
         [
@@ -131,7 +131,7 @@ fn streaming_usage_is_evaluated_at_end_of_stream() {
 
     let observed = receiver
         .recv_timeout(Duration::from_secs(5))
-        .expect("observer should receive final streaming quota metadata");
+        .expect("observer should receive final streaming PPE quota output");
     assert_eq!(observed[0].as_deref(), Some("17"));
     assert_eq!(observed[3].as_deref(), Some("evaluated"));
 }
@@ -139,7 +139,7 @@ fn streaming_usage_is_evaluated_at_end_of_stream() {
 /// The limiter consumes the shared result instead of recomputing raw-token weights.
 #[cfg(feature = "token-rate-limit-filter")]
 #[test]
-fn token_rate_limit_reconciles_from_shared_quota_metadata() {
+fn token_rate_limit_reconciles_from_shared_quota_output() {
     // Raw total is 110, which would exhaust the 100-unit window. The formula
     // yields ceil(10/3 + 10 + 90/30) = 17, so a second reservation fits.
     let response = r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":90}}}"#;
@@ -160,7 +160,7 @@ fn token_rate_limit_reconciles_from_shared_quota_metadata() {
     }
 }
 
-/// Test-only downstream consumer proving metadata write-back ordering.
+/// Test-only downstream consumer proving PPE output ordering.
 struct QuotaObserver {
     /// Sends the final bounded quota contract to the test thread.
     sender: mpsc::Sender<[Option<String>; 4]>,

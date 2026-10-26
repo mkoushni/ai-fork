@@ -239,6 +239,7 @@ pub(super) struct TokenRateLimitConfig {
     /// Reconcile reservations from a PPE token-quota plugin result instead of
     /// recomputing static token weights inside this filter. Defaults to `false`
     /// for full compatibility with existing configurations.
+    /// Requires the `token-quota-filter` feature when set to `true`.
     ///
     /// Mutually exclusive with both `default_weights` and per-rule `weights`:
     /// the PPE result must be the single source of quota units.

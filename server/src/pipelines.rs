@@ -223,7 +223,7 @@ fn build_listener_pipelines(
         #[cfg(not(feature = "openai-responses"))]
         let request_body_limit = config.body_limits.max_request_bytes;
         #[cfg(feature = "token-rate-limit-filter")]
-        validate_shared_token_quota_pipeline(&entries, &listener.name)?;
+        validate_shared_token_quota_pipeline(&entries, &chains, &listener.name)?;
         let mut pipeline =
             FilterPipeline::build_with_chains(&mut entries, &registry, &chains, &config.insecure_options)?;
         configure_pipeline(
@@ -263,8 +263,15 @@ fn build_listener_pipelines(
 )]
 fn validate_shared_token_quota_pipeline(
     entries: &[FilterEntry],
+    chains: &HashMap<&str, &[FilterEntry]>,
     listener_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if shared_quota_limiter_exists_in_branch(entries, chains, &mut HashSet::new()) {
+        return Err(format!(
+            "listener '{listener_name}': token_rate_limit with use_token_quota must be top-level, not branch-conditional"
+        )
+        .into());
+    }
     let shared_limiters = entries
         .iter()
         .enumerate()
@@ -303,6 +310,36 @@ fn validate_shared_token_quota_pipeline(
         .into());
     }
     Ok(())
+}
+
+/// Detect a shared-quota limiter nested in any reachable inline or named branch.
+#[cfg(feature = "token-rate-limit-filter")]
+fn shared_quota_limiter_exists_in_branch(
+    entries: &[FilterEntry],
+    chains: &HashMap<&str, &[FilterEntry]>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    entries.iter().any(|entry| {
+        entry.branch_chains.as_ref().is_some_and(|branches| {
+            branches.iter().any(|branch| {
+                branch.chains.iter().any(|chain| {
+                    let nested = match chain {
+                        ChainRef::Inline { filters, .. } => filters.as_slice(),
+                        ChainRef::Named(name) => {
+                            if visited.insert(name.clone()) {
+                                chains.get(name.as_str()).copied().unwrap_or_default()
+                            } else {
+                                &[]
+                            }
+                        },
+                    };
+                    nested.iter().any(|filter| {
+                        filter.filter_type == "token_rate_limit" && config_bool(filter, "use_token_quota")
+                    }) || shared_quota_limiter_exists_in_branch(nested, chains, visited)
+                })
+            })
+        })
+    })
 }
 
 /// Return every index for one filter type in an expanded listener chain.
@@ -890,7 +927,7 @@ mod tests {
 ",
         )
         .unwrap();
-        validate_shared_token_quota_pipeline(&valid, "inference").unwrap();
+        validate_shared_token_quota_pipeline(&valid, &HashMap::new(), "inference").unwrap();
 
         for (yaml, expected) in [
             (
@@ -934,9 +971,51 @@ mod tests {
             ),
         ] {
             let entries: Vec<FilterEntry> = serde_yaml::from_str(yaml).unwrap();
-            let error = validate_shared_token_quota_pipeline(&entries, "inference").unwrap_err();
+            let error = validate_shared_token_quota_pipeline(&entries, &HashMap::new(), "inference").unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[cfg(feature = "token-rate-limit-filter")]
+    #[test]
+    fn shared_token_quota_limiter_must_not_be_branch_conditional() {
+        let entries: Vec<FilterEntry> = serde_yaml::from_str(
+            "
+- filter: request_id
+  branch_chains:
+    - name: quota
+      rejoin: terminal
+      chains:
+        - name: quota-inline
+          filters:
+            - filter: token_rate_limit
+              use_token_quota: true
+",
+        )
+        .unwrap();
+        let error = validate_shared_token_quota_pipeline(&entries, &HashMap::new(), "inference").unwrap_err();
+        assert!(error.to_string().contains("must be top-level"), "{error}");
+
+        let named: Vec<FilterEntry> = serde_yaml::from_str(
+            "
+- filter: token_rate_limit
+  use_token_quota: true
+",
+        )
+        .unwrap();
+        let named_entries: Vec<FilterEntry> = serde_yaml::from_str(
+            "
+- filter: request_id
+  branch_chains:
+    - name: quota
+      rejoin: terminal
+      chains: [quota-chain]
+",
+        )
+        .unwrap();
+        let chains = HashMap::from([("quota-chain", named.as_slice())]);
+        let error = validate_shared_token_quota_pipeline(&named_entries, &chains, "inference").unwrap_err();
+        assert!(error.to_string().contains("must be top-level"), "{error}");
     }
 
     #[test]

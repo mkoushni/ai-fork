@@ -143,7 +143,8 @@ use self::{
     },
     weights::{TokenWeights, UsageCounts, parse_u64_meta, weighted_cost},
 };
-use crate::token_usage::{META_TOKEN_QUOTA_STATUS, META_TOKEN_QUOTA_VALUE, TOKEN_QUOTA_STATUS_EVALUATED};
+#[cfg(feature = "token-quota-filter")]
+use crate::token_quota::TokenQuotaResultStatus;
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -2272,14 +2273,11 @@ impl TokenRateLimitFilter {
     fn actual_cost(&self, ctx: &HttpFilterContext<'_>, rule: &CompiledRule) -> Option<u64> {
         if self.reconciliation_source == ReconciliationSource::SharedQuota {
             #[cfg(feature = "token-quota-filter")]
-            if let Some(result) = crate::token_quota::result(ctx) {
-                return (result.status == TOKEN_QUOTA_STATUS_EVALUATED)
-                    .then_some(result.value)
-                    .flatten();
+            {
+                return crate::token_quota::decision(ctx).and_then(shared_quota_cost);
             }
-            return (ctx.get_metadata(META_TOKEN_QUOTA_STATUS) == Some(TOKEN_QUOTA_STATUS_EVALUATED))
-                .then(|| parse_u64_meta(ctx, META_TOKEN_QUOTA_VALUE))
-                .flatten();
+            #[cfg(not(feature = "token-quota-filter"))]
+            return None;
         }
         weighted_cost(UsageCounts::from_context(ctx), rule.weights)
     }
@@ -2908,6 +2906,14 @@ impl TokenRateLimitFilter {
             tracing::error!(%error, rule = rule.name, "token_rate_limit: failed to enqueue reconciliation");
         }
     }
+}
+
+/// Accept only successfully evaluated PPE quota decisions.
+#[cfg(feature = "token-quota-filter")]
+fn shared_quota_cost(decision: crate::token_quota::TokenQuotaDecision) -> Option<u64> {
+    (decision.status == TokenQuotaResultStatus::Evaluated)
+        .then_some(decision.value)
+        .flatten()
 }
 
 /// Denial details from a completed `reserve()`, bundled so

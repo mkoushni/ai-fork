@@ -494,13 +494,8 @@ fn token_counts_read_defaults_reasoning_to_zero() {
 #[test]
 fn usage_event_carries_shared_quota_audit_fields() {
     let req = make_request(http::Method::POST, "/v1/chat/completions");
-    let mut filter_ctx = make_filter_context(&req);
-    filter_ctx.set_metadata(META_TOKEN_QUOTA_VALUE, "55");
-    filter_ctx.set_metadata(META_TOKEN_QUOTA_FORMULA, "weighted-quota-v1");
-    filter_ctx.set_metadata(META_TOKEN_QUOTA_UNIT, "quota_units");
-    filter_ctx.set_metadata(META_TOKEN_QUOTA_STATUS, "evaluated");
-    filter_ctx.extensions.insert(quota_audit_fixture());
-    let tokens = TokenCounts::read(&filter_ctx);
+    let filter_ctx = make_filter_context(&req);
+    let tokens = TokenCounts::read_with_policy(&filter_ctx, quota_snapshot_fixture());
     let state = state_for("testuser", "gpt-4");
 
     let event = build_usage_event(&event_ctx("evt-quota", &state), tokens);
@@ -515,17 +510,25 @@ fn usage_event_carries_shared_quota_audit_fields() {
     assert_eq!(event["data"]["quota_context"]["backend"], "openai-primary");
 }
 
-/// Build the exact normalized objects retained by `token_quota` for auditing.
-fn quota_audit_fixture() -> TokenQuotaAudit {
-    TokenQuotaAudit {
-        usage: serde_json::from_str(
+/// Build the exact typed PPE snapshot retained by metering for auditing.
+fn quota_snapshot_fixture() -> PolicyQuotaSnapshot {
+    PolicyQuotaSnapshot {
+        value: Some(55),
+        formula: Some("weighted-quota-v1".to_owned()),
+        unit: Some("quota_units".to_owned()),
+        status: Some("evaluated".to_owned()),
+        usage: Some(
+            serde_json::from_str(
             r#"{"input":{"total":12,"uncached":12,"cache_read":0,"cache_write":0},"output":{"total":3,"visible":3,"reasoning":0},"total":15,"unclassified":0,"typed":true,"reported":{"input":true,"output":true,"total":true,"cache_read":false,"cache_write":false,"reasoning":false}}"#,
         )
-        .unwrap(),
-        context: serde_json::from_str(
+            .unwrap(),
+        ),
+        context: Some(
+            serde_json::from_str(
             r#"{"route":"chat","backend":"openai-primary","provider":"openai","model":"gpt-4"}"#,
         )
-        .unwrap(),
+            .unwrap(),
+        ),
     }
 }
 

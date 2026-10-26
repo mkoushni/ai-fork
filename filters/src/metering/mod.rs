@@ -57,9 +57,8 @@ use self::config::{ExternalMeteringConfig, validate_config};
 // Import the token metadata keys from `token_count`, their sole writer, so this
 // reader can never drift to a stale literal and silently meter zero tokens.
 use crate::token_usage::{
-    META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_QUOTA_FORMULA,
-    META_TOKEN_QUOTA_STATUS, META_TOKEN_QUOTA_UNIT, META_TOKEN_QUOTA_VALUE, META_TOKEN_REASONING, META_TOKEN_TOTAL,
-    TokenQuotaAudit,
+    META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_REASONING,
+    META_TOKEN_TOTAL,
 };
 
 // -----------------------------------------------------------------------------
@@ -638,7 +637,7 @@ fn policy_quota_snapshot(ctx: &HttpFilterContext<'_>) -> PolicyQuotaSnapshot {
         value: result.value,
         formula: Some(result.formula_id),
         unit: Some(result.unit),
-        status: Some(result.status),
+        status: Some(result.status.as_str().to_owned()),
         usage: result.usage,
         context: Some(result.context),
     })
@@ -653,12 +652,11 @@ fn policy_quota_snapshot(_ctx: &HttpFilterContext<'_>) -> PolicyQuotaSnapshot {
 impl TokenCounts {
     /// Read the counts the `token_count` filter left in `filter_metadata`.
     fn read(ctx: &HttpFilterContext<'_>) -> Self {
-        let policy = policy_quota_snapshot(ctx);
-        // The event is dispatched asynchronously after this request hook, so
-        // take the only owned copy of the bounded audit objects at that boundary.
-        let (legacy_usage, legacy_context) = ctx.extensions.get::<TokenQuotaAudit>().map_or((None, None), |audit| {
-            (Some(audit.usage.clone()), Some(audit.context.clone()))
-        });
+        Self::read_with_policy(ctx, policy_quota_snapshot(ctx))
+    }
+
+    /// Combine token metadata with the typed PPE quota snapshot.
+    fn read_with_policy(ctx: &HttpFilterContext<'_>, policy: PolicyQuotaSnapshot) -> Self {
         Self {
             input: read_token_meta(ctx, META_TOKEN_INPUT),
             output: read_token_meta(ctx, META_TOKEN_OUTPUT),
@@ -666,21 +664,12 @@ impl TokenCounts {
             cache_read: read_token_meta(ctx, META_TOKEN_CACHE_READ),
             cache_write: read_token_meta(ctx, META_TOKEN_CACHE_WRITE),
             reasoning: read_token_meta(ctx, META_TOKEN_REASONING),
-            quota_value: policy.value.or_else(|| {
-                ctx.get_metadata(META_TOKEN_QUOTA_VALUE)
-                    .and_then(|value| value.parse::<u64>().ok())
-            }),
-            quota_formula: policy
-                .formula
-                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_FORMULA).map(str::to_owned)),
-            quota_unit: policy
-                .unit
-                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_UNIT).map(str::to_owned)),
-            quota_status: policy
-                .status
-                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_STATUS).map(str::to_owned)),
-            quota_usage: policy.usage.or(legacy_usage),
-            quota_context: policy.context.or(legacy_context),
+            quota_value: policy.value,
+            quota_formula: policy.formula,
+            quota_unit: policy.unit,
+            quota_status: policy.status,
+            quota_usage: policy.usage,
+            quota_context: policy.context,
         }
     }
 }

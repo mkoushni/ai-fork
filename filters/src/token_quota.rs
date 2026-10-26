@@ -18,12 +18,6 @@ use crate::token_usage::normalized::{NormalizedUsage, UsageCounts, UsageInput};
 pub(crate) const KIND: &str = "ai/token-quota";
 /// Trusted custom namespace shared with PPE.
 const CUSTOM_KEY: &str = "token_quota";
-/// Successful PPE evaluation status.
-const STATUS_EVALUATED: &str = "evaluated";
-/// No usable provider usage was reported.
-const STATUS_MISSING_USAGE: &str = "missing_usage";
-/// Usage capture exceeded its configured bound.
-const STATUS_USAGE_OVERFLOW: &str = "usage_overflow";
 /// Maximum stable formula identifier length.
 const MAX_FORMULA_ID_BYTES: usize = 64;
 /// Maximum non-currency unit name length.
@@ -79,18 +73,62 @@ impl Default for TokenWeights {
 #[derive(Debug, Serialize, Deserialize)]
 struct TokenQuotaInput {
     /// Input availability status.
-    status: String,
+    status: TokenQuotaInputStatus,
     /// Normalized usage, when available.
     usage: Option<NormalizedUsage>,
     /// Trusted routing facts.
     context: RouteContext,
 }
 
+/// Availability of trusted usage supplied to the PPE plugin.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TokenQuotaInputStatus {
+    /// Normalized usage is present.
+    Ready,
+    /// The provider did not report usable usage.
+    MissingUsage,
+    /// Usage capture exceeded its configured bound.
+    UsageOverflow,
+}
+
+/// Evaluation outcome returned by PPE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenQuotaResultStatus {
+    /// The formula produced a quota value.
+    Evaluated,
+    /// The provider did not report usable usage.
+    MissingUsage,
+    /// Usage capture exceeded its configured bound.
+    UsageOverflow,
+}
+
+impl TokenQuotaResultStatus {
+    /// Stable status name used at generic metering boundaries.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Evaluated => "evaluated",
+            Self::MissingUsage => "missing_usage",
+            Self::UsageOverflow => "usage_overflow",
+        }
+    }
+}
+
+impl From<TokenQuotaInputStatus> for TokenQuotaResultStatus {
+    fn from(status: TokenQuotaInputStatus) -> Self {
+        match status {
+            TokenQuotaInputStatus::Ready | TokenQuotaInputStatus::MissingUsage => Self::MissingUsage,
+            TokenQuotaInputStatus::UsageOverflow => Self::UsageOverflow,
+        }
+    }
+}
+
 /// Stable PPE output consumed by rate limiting and metering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TokenQuotaResult {
     /// Evaluation outcome.
-    pub(crate) status: String,
+    pub(crate) status: TokenQuotaResultStatus,
     /// Rounded quota units on success.
     pub(crate) value: Option<u64>,
     /// Formula that produced the result.
@@ -101,6 +139,15 @@ pub(crate) struct TokenQuotaResult {
     pub(crate) usage: Option<serde_json::Value>,
     /// Exact routing context supplied to the plugin.
     pub(crate) context: serde_json::Value,
+}
+
+/// Minimal PPE decision needed by rate-limit reconciliation.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) struct TokenQuotaDecision {
+    /// Evaluation outcome.
+    pub(crate) status: TokenQuotaResultStatus,
+    /// Rounded quota units on success.
+    pub(crate) value: Option<u64>,
 }
 
 /// Bounded routing facts supplied to policy for audit and route selection.
@@ -171,19 +218,22 @@ impl HookHandler<CmfHook> for TokenQuotaPlugin {
             .custom
             .as_ref()
             .and_then(|custom| custom.get(CUSTOM_KEY))
-            .and_then(|value| serde_json::from_value::<TokenQuotaInput>(value.clone()).ok())
+            .and_then(|value| TokenQuotaInput::deserialize(value).ok())
         else {
             return PluginResult::allow();
         };
 
         let usage = input.usage.as_ref().and_then(|usage| serde_json::to_value(usage).ok());
         let context = serde_json::to_value(input.context).unwrap_or(serde_json::Value::Null);
-        let (status, value) = input.usage.as_ref().map_or((input.status, None), |usage| {
-            (
-                STATUS_EVALUATED.to_owned(),
-                Some(weighted_cost(usage, self.config.weights)),
-            )
-        });
+        let (status, value) = input.usage.as_ref().map_or_else(
+            || (TokenQuotaResultStatus::from(input.status), None),
+            |usage| {
+                (
+                    TokenQuotaResultStatus::Evaluated,
+                    Some(weighted_cost(usage, self.config.weights)),
+                )
+            },
+        );
         let result = TokenQuotaResult {
             status,
             value,
@@ -315,12 +365,12 @@ pub(crate) fn register_factory() {
 /// Publish the latest normalized usage and trusted route context for PPE.
 pub(crate) fn publish_policy_context(ctx: &mut HttpFilterContext<'_>) {
     let (status, usage) = match UsageCounts::from_context(ctx).normalize() {
-        UsageInput::Available(usage) => ("ready", Some(usage)),
-        UsageInput::Missing => (STATUS_MISSING_USAGE, None),
-        UsageInput::Overflow => (STATUS_USAGE_OVERFLOW, None),
+        UsageInput::Available(usage) => (TokenQuotaInputStatus::Ready, Some(usage)),
+        UsageInput::Missing => (TokenQuotaInputStatus::MissingUsage, None),
+        UsageInput::Overflow => (TokenQuotaInputStatus::UsageOverflow, None),
     };
     let input = TokenQuotaInput {
-        status: status.to_owned(),
+        status,
         usage,
         context: RouteContext::from_context(ctx),
     };
@@ -337,7 +387,15 @@ pub(crate) fn result(ctx: &HttpFilterContext<'_>) -> Option<TokenQuotaResult> {
     ctx.extensions
         .get::<PolicyResponseOutput>()
         .and_then(|output| output.get(CUSTOM_KEY))
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .and_then(|value| TokenQuotaResult::deserialize(value).ok())
+}
+
+/// Read only the quota decision needed by rate-limit reconciliation.
+pub(crate) fn decision(ctx: &HttpFilterContext<'_>) -> Option<TokenQuotaDecision> {
+    ctx.extensions
+        .get::<PolicyResponseOutput>()
+        .and_then(|output| output.get(CUSTOM_KEY))
+        .and_then(|value| TokenQuotaDecision::deserialize(value).ok())
 }
 
 #[cfg(test)]

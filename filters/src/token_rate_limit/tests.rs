@@ -8,15 +8,16 @@ use std::future::Future;
 use praxis_filter::{FilterAction, HttpFilter};
 
 #[cfg(feature = "token-quota-filter")]
+use super::shared_quota_cost;
+#[cfg(feature = "token-quota-filter")]
 use super::weights::{UsageCounts, weighted_cost};
 use super::{META_FAIL_OPEN, META_RESERVATION_ID, TokenRateLimitFilter};
+#[cfg(feature = "token-quota-filter")]
+use crate::token_quota::{TokenQuotaDecision, TokenQuotaResultStatus};
 use crate::token_usage::{
     META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_REASONING,
     META_TOKEN_STATUS, META_TOKEN_TOTAL, TOKEN_STATUS_OVERFLOW,
 };
-#[cfg(feature = "token-quota-filter")]
-use crate::token_usage::{META_TOKEN_QUOTA_STATUS, META_TOKEN_QUOTA_VALUE, TOKEN_QUOTA_STATUS_EVALUATED};
-
 #[cfg(feature = "token-quota-filter")]
 pub(crate) fn legacy_weighted_cost_parity_fixture() -> Option<u64> {
     let usage = UsageCounts {
@@ -2906,29 +2907,19 @@ fn shared_quota_source_rejects_legacy_weight_configuration() {
 }
 
 #[cfg(feature = "token-quota-filter")]
-#[tokio::test]
-async fn shared_quota_metadata_is_the_authoritative_reconciliation_value() {
-    // The raw total (110) would exhaust capacity, but token_quota's shared
-    // result (29) leaves enough room for the next 50-unit reservation.
-    let yaml = single_rule_yaml_with(
-        "use_token_quota: true",
-        "algorithm: sliding_window\nwindow: 1h\ncapacity: 90\nreserved_tokens: 50",
-    );
-    let filter = TokenRateLimitFilter::from_config(&yaml).unwrap();
-    let req = crate::test_utils::make_request(http::Method::POST, "/v1/chat");
-    let mut ctx = crate::test_utils::make_filter_context(&req);
-    drop(filter.on_request(&mut ctx).await.unwrap());
-    ctx.set_metadata(META_TOKEN_TOTAL, "110");
-    ctx.set_metadata(META_TOKEN_QUOTA_VALUE, "29");
-    ctx.set_metadata(META_TOKEN_QUOTA_STATUS, TOKEN_QUOTA_STATUS_EVALUATED);
-    let mut body = None;
-    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+#[test]
+fn shared_quota_decision_is_the_authoritative_reconciliation_value() {
+    let decision = TokenQuotaDecision {
+        status: TokenQuotaResultStatus::Evaluated,
+        value: Some(29),
+    };
+    assert_eq!(shared_quota_cost(decision), Some(29));
 
-    let mut next_ctx = crate::test_utils::make_filter_context(&req);
-    assert!(
-        matches!(filter.on_request(&mut next_ctx).await.unwrap(), FilterAction::Continue),
-        "shared quota 29 of 90 should leave room for another 50-unit reservation"
-    );
+    let missing = TokenQuotaDecision {
+        status: TokenQuotaResultStatus::MissingUsage,
+        value: Some(110),
+    };
+    assert_eq!(shared_quota_cost(missing), None);
 }
 
 fn set_typed_usage(ctx: &mut praxis_filter::HttpFilterContext<'_>, input: u64, output: u64, total: u64) {
