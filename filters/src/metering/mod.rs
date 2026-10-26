@@ -7,7 +7,7 @@
 //! Reads token counts from [`filter_metadata`] keys set by the `token_count`
 //! filter (`token.input`, `token.output`, `token.total`, the prompt cache
 //! breakdown `token.cache_read` / `token.cache_write`, and the reasoning
-//! breakdown `token.reasoning`). When `token_quota` ran earlier in the
+//! breakdown `token.reasoning`). When PPE quota policy ran earlier in the
 //! response chain, the event also carries its derived value, unit, formula
 //! identity, and evaluation status. These are quota/audit fields, not a
 //! monetary charge; raw usage remains the recomputable source of truth.
@@ -145,13 +145,13 @@ const STATUS_METERING_UNAVAILABLE: u16 = 503;
 /// this filter's request hook runs the balance check.
 ///
 /// Usage events include the optional `quota_value`, `quota_formula`,
-/// `quota_unit`, and `quota_status` fields when `token_quota` runs earlier in
-/// the response phase. `quota_usage` and `quota_context` preserve the exact
-/// normalized objects supplied to CEL, including missing-field presence flags,
-/// so the result can be audited and recomputed. Declare `external_metering`
-/// before `token_quota`, and `token_quota` before `token_count`, because
-/// response hooks run in reverse filter order. Quota fields are
-/// enforcement/audit data, never currency.
+/// `quota_unit`, and `quota_status` fields when PPE quota policy runs earlier
+/// in the response phase. `quota_usage` and `quota_context` preserve the exact
+/// normalized policy inputs, including missing-field presence flags, so the
+/// result can be audited and recomputed. Declare `external_metering` before
+/// `policy`, and `policy` before `token_count`, because response hooks run in
+/// reverse filter order. Quota fields are enforcement/audit data, never
+/// currency.
 ///
 /// # YAML
 ///
@@ -595,7 +595,7 @@ struct TokenCounts {
     /// Reasoning/thinking tokens; a subset of `output`.
     reasoning: u64,
 
-    /// Shared quota units derived by `token_quota`, when evaluated.
+    /// Shared quota units derived by PPE, when evaluated.
     quota_value: Option<u64>,
 
     /// Stable formula identity needed to audit or recompute the quota value.
@@ -614,12 +614,49 @@ struct TokenCounts {
     quota_context: Option<serde_json::Value>,
 }
 
+/// PPE quota fields copied before the asynchronous metering dispatch.
+#[derive(Default)]
+struct PolicyQuotaSnapshot {
+    /// Rounded quota units.
+    value: Option<u64>,
+    /// Stable formula identity.
+    formula: Option<String>,
+    /// Non-currency result unit.
+    unit: Option<String>,
+    /// PPE evaluation status.
+    status: Option<String>,
+    /// Exact normalized usage.
+    usage: Option<serde_json::Value>,
+    /// Exact trusted route context.
+    context: Option<serde_json::Value>,
+}
+
+/// Copy PPE quota output into the metering-owned snapshot.
+#[cfg(feature = "token-quota-filter")]
+fn policy_quota_snapshot(ctx: &HttpFilterContext<'_>) -> PolicyQuotaSnapshot {
+    crate::token_quota::result(ctx).map_or_else(PolicyQuotaSnapshot::default, |result| PolicyQuotaSnapshot {
+        value: result.value,
+        formula: Some(result.formula_id),
+        unit: Some(result.unit),
+        status: Some(result.status),
+        usage: result.usage,
+        context: Some(result.context),
+    })
+}
+
+/// Return an empty snapshot when PPE quota support is not compiled.
+#[cfg(not(feature = "token-quota-filter"))]
+fn policy_quota_snapshot(_ctx: &HttpFilterContext<'_>) -> PolicyQuotaSnapshot {
+    PolicyQuotaSnapshot::default()
+}
+
 impl TokenCounts {
     /// Read the counts the `token_count` filter left in `filter_metadata`.
     fn read(ctx: &HttpFilterContext<'_>) -> Self {
+        let policy = policy_quota_snapshot(ctx);
         // The event is dispatched asynchronously after this request hook, so
         // take the only owned copy of the bounded audit objects at that boundary.
-        let (quota_usage, quota_context) = ctx.extensions.get::<TokenQuotaAudit>().map_or((None, None), |audit| {
+        let (legacy_usage, legacy_context) = ctx.extensions.get::<TokenQuotaAudit>().map_or((None, None), |audit| {
             (Some(audit.usage.clone()), Some(audit.context.clone()))
         });
         Self {
@@ -629,14 +666,21 @@ impl TokenCounts {
             cache_read: read_token_meta(ctx, META_TOKEN_CACHE_READ),
             cache_write: read_token_meta(ctx, META_TOKEN_CACHE_WRITE),
             reasoning: read_token_meta(ctx, META_TOKEN_REASONING),
-            quota_value: ctx
-                .get_metadata(META_TOKEN_QUOTA_VALUE)
-                .and_then(|value| value.parse::<u64>().ok()),
-            quota_formula: ctx.get_metadata(META_TOKEN_QUOTA_FORMULA).map(str::to_owned),
-            quota_unit: ctx.get_metadata(META_TOKEN_QUOTA_UNIT).map(str::to_owned),
-            quota_status: ctx.get_metadata(META_TOKEN_QUOTA_STATUS).map(str::to_owned),
-            quota_usage,
-            quota_context,
+            quota_value: policy.value.or_else(|| {
+                ctx.get_metadata(META_TOKEN_QUOTA_VALUE)
+                    .and_then(|value| value.parse::<u64>().ok())
+            }),
+            quota_formula: policy
+                .formula
+                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_FORMULA).map(str::to_owned)),
+            quota_unit: policy
+                .unit
+                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_UNIT).map(str::to_owned)),
+            quota_status: policy
+                .status
+                .or_else(|| ctx.get_metadata(META_TOKEN_QUOTA_STATUS).map(str::to_owned)),
+            quota_usage: policy.usage.or(legacy_usage),
+            quota_context: policy.context.or(legacy_context),
         }
     }
 }

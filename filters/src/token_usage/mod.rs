@@ -61,7 +61,7 @@ pub(crate) const META_TOKEN_CACHE_WRITE: &str = "token.cache_write";
 /// Metadata key for reasoning / thinking tokens reported by the provider.
 pub(crate) const META_TOKEN_REASONING: &str = "token.reasoning";
 
-/// Metadata containing CEL-derived quota units for downstream consumers.
+/// Legacy metadata containing quota units for downstream consumers.
 pub(crate) const META_TOKEN_QUOTA_VALUE: &str = "token.quota.value";
 
 /// Metadata identifying the formula that produced [`META_TOKEN_QUOTA_VALUE`].
@@ -74,18 +74,18 @@ pub(crate) const META_TOKEN_QUOTA_UNIT: &str = "token.quota.unit";
 pub(crate) const META_TOKEN_QUOTA_STATUS: &str = "token.quota.status";
 
 /// [`META_TOKEN_QUOTA_STATUS`] value for a published quota result.
-#[cfg(any(feature = "token-quota-filter", feature = "token-rate-limit-filter"))]
+#[cfg(feature = "token-rate-limit-filter")]
 pub(crate) const TOKEN_QUOTA_STATUS_EVALUATED: &str = "evaluated";
 
-/// Exact CEL inputs retained request-locally for audit-event consumers.
+/// Legacy exact formula inputs retained request-locally for audit consumers.
 ///
 /// This richer object intentionally uses typed extensions instead of bounded
 /// string metadata. Scalar quota results remain metadata for generic consumers.
 #[derive(Clone, Debug)]
 pub(crate) struct TokenQuotaAudit {
-    /// Normalized usage object supplied to CEL.
+    /// Normalized usage object supplied to policy.
     pub(crate) usage: serde_json::Value,
-    /// Routing context object supplied to CEL.
+    /// Routing context object supplied to policy.
     pub(crate) context: serde_json::Value,
 }
 

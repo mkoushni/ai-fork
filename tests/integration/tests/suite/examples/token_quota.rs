@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Praxis Contributors
 
-//! Functional coverage for the `token_quota` CEL bridge.
+//! Functional coverage for PPE-driven token quota.
 
 use std::{collections::HashMap, sync::mpsc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use praxis_core::config::Config;
-use praxis_filter::{BodyAccess, BodyMode, FilterAction, FilterError, FilterFactory, HttpFilter, HttpFilterContext};
+use praxis_filter::{
+    BodyAccess, BodyMode, FilterAction, FilterError, FilterFactory, HttpFilter, HttpFilterContext, PolicyResponseOutput,
+};
 use praxis_test_utils::{
     Backend, free_port, http_send, json_post, parse_body, parse_status, start_proxy, start_proxy_with_registry,
     test_subrequest_client,
@@ -21,10 +23,23 @@ fn example_config_token_quota() {
     let backend = Backend::fixed(response)
         .header("content-type", "application/json")
         .start_with_shutdown();
-    let config = super::load_example_config(
+    let mut config = super::load_example_config(
         "token-quota.yaml",
         free_port(),
         HashMap::from([("127.0.0.1:3000", backend.port())]),
+    );
+    let policy_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/configs/token-quota-policy.yaml")
+        .canonicalize()
+        .expect("example policy path");
+    let policy = config.filter_chains[0]
+        .filters
+        .iter_mut()
+        .find(|entry| entry.filter_type == "policy")
+        .expect("example policy filter");
+    policy.config.as_mapping_mut().expect("policy config mapping").insert(
+        serde_yaml::Value::String("config_path".to_owned()),
+        serde_yaml::Value::String(policy_path.to_string_lossy().into_owned()),
     );
     let proxy = start_proxy(&config);
     let raw = http_send(
@@ -49,7 +64,8 @@ fn weighted_quota_is_written_back_after_token_count() {
     let backend = Backend::fixed(response)
         .header("content-type", "application/json")
         .start_with_shutdown();
-    let config = Config::from_yaml(&config_yaml(free_port(), backend.port())).expect("config should parse");
+    let (_policy, yaml) = config_yaml(free_port(), backend.port());
+    let config = Config::from_yaml(&yaml).expect("config should parse");
     let (sender, receiver) = mpsc::channel();
     let mut registry = praxis_ai::build_full_registry(&test_subrequest_client());
     registry
@@ -93,7 +109,8 @@ fn streaming_usage_is_evaluated_at_end_of_stream() {
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .start_with_shutdown();
-    let config = Config::from_yaml(&config_yaml(free_port(), backend.port())).expect("config should parse");
+    let (_policy, yaml) = config_yaml(free_port(), backend.port());
+    let config = Config::from_yaml(&yaml).expect("config should parse");
     let (sender, receiver) = mpsc::channel();
     let mut registry = praxis_ai::build_full_registry(&test_subrequest_client());
     registry
@@ -129,7 +146,8 @@ fn token_rate_limit_reconciles_from_shared_quota_metadata() {
     let backend = Backend::fixed(response)
         .header("content-type", "application/json")
         .start_with_shutdown();
-    let config = Config::from_yaml(&rate_limit_config_yaml(free_port(), backend.port())).expect("config should parse");
+    let (_policy, yaml) = rate_limit_config_yaml(free_port(), backend.port());
+    let config = Config::from_yaml(&yaml).expect("config should parse");
     let proxy = start_proxy(&config);
 
     for request_number in 1..=2 {
@@ -173,12 +191,27 @@ impl HttpFilter for QuotaObserver {
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
         if end_of_stream {
-            let values = [
-                ctx.get_metadata("token.quota.value").map(str::to_owned),
-                ctx.get_metadata("token.quota.formula").map(str::to_owned),
-                ctx.get_metadata("token.quota.unit").map(str::to_owned),
-                ctx.get_metadata("token.quota.status").map(str::to_owned),
-            ];
+            let quota = ctx
+                .extensions
+                .get::<PolicyResponseOutput>()
+                .and_then(|output| output.get("token_quota"));
+            let values = quota.map_or([None, None, None, None], |quota| {
+                [
+                    quota
+                        .get("value")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|value| value.to_string()),
+                    quota
+                        .get("formula_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    quota.get("unit").and_then(serde_json::Value::as_str).map(str::to_owned),
+                    quota
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                ]
+            });
             self.sender
                 .send(values)
                 .map_err(|error| FilterError::from(error.to_string()))?;
@@ -187,9 +220,10 @@ impl HttpFilter for QuotaObserver {
     }
 }
 
-/// Build a real response chain: token_count -> token_quota -> observer.
-fn config_yaml(proxy_port: u16, backend_port: u16) -> String {
-    format!(
+/// Build a real response chain: token_count -> policy/PPE -> observer.
+fn config_yaml(proxy_port: u16, backend_port: u16) -> (tempfile::TempDir, String) {
+    let (policy, policy_path) = write_policy();
+    let yaml = format!(
         r#"
 listeners:
   - name: default
@@ -203,10 +237,9 @@ filter_chains:
           - path_prefix: "/"
             cluster: backend
       - filter: test_quota_observer
-      - filter: token_quota
-        formula_id: weighted-quota-v1
-        unit: quota_units
-        expression: "double(usage.input.uncached + usage.unclassified) / 3.0 + double(usage.output.visible) + double(usage.input.cache_write) / 2.4 + double(usage.input.cache_read) / 30.0 + double(usage.output.reasoning)"
+      - filter: policy
+        config_path: "{policy_path}"
+        body_access: read_only
       - filter: token_count
         provider: openai
       - filter: load_balancer
@@ -216,13 +249,15 @@ filter_chains:
 insecure_options:
   allow_private_endpoints: true
 "#
-    )
+    );
+    (policy, yaml)
 }
 
 /// Build an integrated limiter -> quota -> counter response chain.
 #[cfg(feature = "token-rate-limit-filter")]
-fn rate_limit_config_yaml(proxy_port: u16, backend_port: u16) -> String {
-    format!(
+fn rate_limit_config_yaml(proxy_port: u16, backend_port: u16) -> (tempfile::TempDir, String) {
+    let (policy, policy_path) = write_policy();
+    let yaml = format!(
         r#"
 listeners:
   - name: default
@@ -243,9 +278,9 @@ filter_chains:
             window: 1h
             capacity: 90
             reserved_tokens: 50
-      - filter: token_quota
-        formula_id: weighted-quota-v1
-        expression: "double(usage.input.uncached + usage.unclassified) / 3.0 + double(usage.output.visible) + double(usage.input.cache_write) / 2.4 + double(usage.input.cache_read) / 30.0 + double(usage.output.reasoning)"
+      - filter: policy
+        config_path: "{policy_path}"
+        body_access: read_only
       - filter: token_count
         provider: openai
       - filter: load_balancer
@@ -255,5 +290,39 @@ filter_chains:
 insecure_options:
   allow_private_endpoints: true
 "#
+    );
+    (policy, yaml)
+}
+
+/// Write the PPE document that selects the weighted quota plugin.
+fn write_policy() -> (tempfile::TempDir, String) {
+    let dir = tempfile::TempDir::new().expect("policy tempdir");
+    let path = dir.path().join("token-quota-policy.yaml");
+    std::fs::write(
+        &path,
+        r#"plugins:
+  - name: weighted-quota-v1
+    kind: ai/token-quota
+    hooks: [cmf.llm_output]
+    mode: sequential
+    on_error: fail
+    config:
+      formula_id: weighted-quota-v1
+      unit: quota_units
+      weights:
+        input: 0.3333333333333333
+        cached_input: 0.03333333333333333
+        cache_write: 0.4166666666666667
+        output: 1.0
+        reasoning: 1.0
+routes:
+  - llm: "*"
+    authorization:
+      post_invocation:
+        - "run(weighted-quota-v1)"
+"#,
     )
+    .expect("write policy");
+    let path = path.to_str().expect("utf8 policy path").to_owned();
+    (dir, path)
 }

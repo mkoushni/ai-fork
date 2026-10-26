@@ -1084,7 +1084,7 @@ struct AccountingPolicy {
 enum ReconciliationSource {
     /// Preserve the legacy filter/rule token-weight calculation.
     LegacyWeights,
-    /// Consume the shared CEL-derived `token.quota.value` result.
+    /// Consume the shared PPE token-quota result.
     SharedQuota,
 }
 
@@ -2106,7 +2106,7 @@ fn compile_rule(
 ///   cached_input: 0.1                # prompt-cache hits (token.cache_read)
 ///   cache_write: 1.25                # prompt-cache writes (token.cache_write)
 ///   reasoning: 0.9                   # thinking tokens (token.reasoning)
-/// # use_token_quota: true            # alternatively consume token.quota.value;
+/// # use_token_quota: true            # alternatively consume PPE quota output;
 ///                                    # mutually exclusive with all weights
 /// rules:
 ///   - name: team-alpha                 # human-readable, unique per filter instance
@@ -2196,6 +2196,9 @@ impl TokenRateLimitFilter {
                 "token_rate_limit: use_token_quota cannot be combined with default_weights or per-rule weights".into(),
             );
         }
+        if cfg.use_token_quota && !cfg!(feature = "token-quota-filter") {
+            return Err("token_rate_limit: use_token_quota requires the token-quota-filter feature".into());
+        }
 
         let backend = build_backend_resource(&cfg.backend)?;
         let filter_defaults = TokenWeights::UNITY.overlay(&cfg.default_weights, "default_weights")?;
@@ -2268,6 +2271,12 @@ impl TokenRateLimitFilter {
     /// Resolve the final per-request quota charge from the configured source.
     fn actual_cost(&self, ctx: &HttpFilterContext<'_>, rule: &CompiledRule) -> Option<u64> {
         if self.reconciliation_source == ReconciliationSource::SharedQuota {
+            #[cfg(feature = "token-quota-filter")]
+            if let Some(result) = crate::token_quota::result(ctx) {
+                return (result.status == TOKEN_QUOTA_STATUS_EVALUATED)
+                    .then_some(result.value)
+                    .flatten();
+            }
             return (ctx.get_metadata(META_TOKEN_QUOTA_STATUS) == Some(TOKEN_QUOTA_STATUS_EVALUATED))
                 .then(|| parse_u64_meta(ctx, META_TOKEN_QUOTA_VALUE))
                 .flatten();

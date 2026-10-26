@@ -33,7 +33,6 @@ base64 = "0.23.1"
 bytes = "1.12.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-cel = "0.14.5"
 clap = { version = "4.6.7", features = ["derive"] }
 crc32fast = "1.5.2"
 dashmap = "6.2.1"
@@ -126,6 +125,7 @@ praxis-filter = { version = "0.7.5", package = "praxis-proxy-filter", default-fe
 praxis-protocol = { version = "0.7.5", package = "praxis-proxy-protocol" }
 praxis-tls = { version = "0.7.5", package = "praxis-proxy-tls" }
 praxis = { version = "0.7.5", package = "praxis-proxy", default-features = false, features = ["config-reload", "admin-api", "pingora"] }
+ppe = { version = "0.4.1", package = "praxis-policy" }
 praxis-test-utils = { path = "tests/utils", default-features = false }
 
 # AI-owned llm-d ext_proc compatibility layer

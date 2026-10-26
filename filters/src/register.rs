@@ -18,8 +18,6 @@ use crate::InFlightTrackerFilter;
 use crate::Sigv4SignFilter;
 #[cfg(feature = "token-ceiling-filter")]
 use crate::TokenCeilingFilter;
-#[cfg(feature = "token-quota-filter")]
-use crate::TokenQuotaFilter;
 #[cfg(feature = "token-rate-limit-filter")]
 use crate::TokenRateLimitFilter;
 use crate::{
@@ -43,6 +41,8 @@ use crate::{
 /// [`install_pipeline_extensions`] so the OpenAI store, rehydrate, compaction,
 /// and MCP approval filters find their shared response store registry.
 pub fn register_ai_filters(registry: &mut FilterRegistry, subrequest_client: Option<&SubRequestClient>) {
+    #[cfg(feature = "token-quota-filter")]
+    crate::token_quota::register_factory();
     register_agentic_filters(registry);
     #[cfg(feature = "aws-sigv4-filter")]
     register_aws_filters(registry);
@@ -259,11 +259,6 @@ fn register_token_filters(registry: &mut FilterRegistry) {
     praxis_filter::register_filters!(
         @register registry,
         http "token_usage_headers" => TokenUsageHeadersFilter::from_config
-    );
-    #[cfg(feature = "token-quota-filter")]
-    praxis_filter::register_filters!(
-        @register registry,
-        http "token_quota" => TokenQuotaFilter::from_config
     );
     #[cfg(feature = "token-rate-limit-filter")]
     praxis_filter::register_filters!(

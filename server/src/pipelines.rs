@@ -252,7 +252,7 @@ fn build_listener_pipelines(
 
 /// Validate the single-source response chain used by shared quota enforcement.
 ///
-/// Request filters are declared in `token_rate_limit -> token_quota ->
+/// Request filters are declared in `token_rate_limit -> policy ->
 /// token_count` order so their response-body hooks run in the inverse order.
 /// Requiring unconditional, unique producers prevents a missing branch or
 /// response condition from silently settling a reservation at its estimate.
@@ -275,30 +275,30 @@ fn validate_shared_token_quota_pipeline(
         return Ok(());
     }
 
-    let quota_filters = filter_indices(entries, "token_quota");
+    let policy_filters = filter_indices(entries, "policy");
     let token_counters = filter_indices(entries, "token_count");
-    let ([quota_index], [count_index]) = (quota_filters.as_slice(), token_counters.as_slice()) else {
+    let ([policy_index], [count_index]) = (policy_filters.as_slice(), token_counters.as_slice()) else {
         return Err(format!(
-            "listener '{listener_name}': token_rate_limit with use_token_quota requires exactly one token_quota and one token_count filter"
+            "listener '{listener_name}': token_rate_limit with use_token_quota requires exactly one policy and one token_count filter"
         )
         .into());
     };
-    let (Some(quota), Some(counter)) = (entries.get(*quota_index), entries.get(*count_index)) else {
+    let (Some(policy), Some(counter)) = (entries.get(*policy_index), entries.get(*count_index)) else {
         return Err(format!("listener '{listener_name}': internal shared quota filter index is invalid").into());
     };
-    if !quota.conditions.is_empty()
-        || !quota.response_conditions.is_empty()
+    if !policy.conditions.is_empty()
+        || !policy.response_conditions.is_empty()
         || !counter.conditions.is_empty()
         || !counter.response_conditions.is_empty()
     {
         return Err(format!(
-            "listener '{listener_name}': token_quota and token_count must be unconditional when token_rate_limit uses shared quota"
+            "listener '{listener_name}': policy and token_count must be unconditional when token_rate_limit uses shared quota"
         )
         .into());
     }
-    if shared_limiters.iter().any(|index| index >= quota_index) || quota_index >= count_index {
+    if shared_limiters.iter().any(|index| index >= policy_index) || policy_index >= count_index {
         return Err(format!(
-            "listener '{listener_name}': shared quota filters must be ordered token_rate_limit -> token_quota -> token_count"
+            "listener '{listener_name}': shared quota filters must be ordered token_rate_limit -> policy -> token_count"
         )
         .into());
     }
@@ -885,7 +885,7 @@ mod tests {
             "
 - filter: token_rate_limit
   use_token_quota: true
-- filter: token_quota
+- filter: policy
 - filter: token_count
 ",
         )
@@ -899,22 +899,22 @@ mod tests {
   use_token_quota: true
 - filter: token_count
 ",
-                "exactly one token_quota and one token_count",
+                "exactly one policy and one token_count",
             ),
             (
                 "
-- filter: token_quota
+- filter: policy
 - filter: token_rate_limit
   use_token_quota: true
 - filter: token_count
 ",
-                "token_rate_limit -> token_quota -> token_count",
+                "token_rate_limit -> policy -> token_count",
             ),
             (
                 "
 - filter: token_rate_limit
   use_token_quota: true
-- filter: token_quota
+- filter: policy
   response_conditions:
     - when:
         status: [200]
@@ -926,11 +926,11 @@ mod tests {
                 "
 - filter: token_rate_limit
   use_token_quota: true
-- filter: token_quota
-- filter: token_quota
+- filter: policy
+- filter: policy
 - filter: token_count
 ",
-                "exactly one token_quota and one token_count",
+                "exactly one policy and one token_count",
             ),
         ] {
             let entries: Vec<FilterEntry> = serde_yaml::from_str(yaml).unwrap();

@@ -4,7 +4,7 @@
 //! Shared normalized usage snapshot for quota and rate-limit consumers.
 
 use praxis_filter::HttpFilterContext;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_REASONING,
@@ -128,8 +128,8 @@ pub(crate) enum UsageInput {
     Overflow,
 }
 
-/// Stable CEL usage contract.
-#[derive(Debug, Clone, Copy, Serialize)]
+/// Stable policy usage contract.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct NormalizedUsage {
     /// Sanitized input-token partitions.
     pub(crate) input: InputUsage,
@@ -146,7 +146,7 @@ pub(crate) struct NormalizedUsage {
 }
 
 /// Input token partitions exposed to consumers.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct InputUsage {
     /// Total normalized input, including cache partitions.
     pub(crate) total: u64,
@@ -159,7 +159,7 @@ pub(crate) struct InputUsage {
 }
 
 /// Output token partitions exposed to consumers.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct OutputUsage {
     /// Total normalized output parent count.
     pub(crate) total: u64,
@@ -170,10 +170,10 @@ pub(crate) struct OutputUsage {
 }
 
 /// Provider field-presence flags exposed to consumers.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "CEL needs an explicit presence bit for each independently optional provider field"
+    reason = "policy needs an explicit presence bit for each independently optional provider field"
 )]
 pub(crate) struct ReportedUsage {
     /// Input parent was present.
