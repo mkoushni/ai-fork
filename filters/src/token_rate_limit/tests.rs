@@ -7,16 +7,17 @@ use std::future::Future;
 
 use praxis_filter::{FilterAction, HttpFilter};
 
-use super::{
-    META_FAIL_OPEN, META_RESERVATION_ID, TokenRateLimitFilter,
-    weights::{UsageCounts, weighted_cost},
-};
+#[cfg(feature = "token-quota-filter")]
+use super::weights::{UsageCounts, weighted_cost};
+use super::{META_FAIL_OPEN, META_RESERVATION_ID, TokenRateLimitFilter};
 use crate::token_usage::{
-    META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_QUOTA_STATUS,
-    META_TOKEN_QUOTA_VALUE, META_TOKEN_REASONING, META_TOKEN_STATUS, META_TOKEN_TOTAL, TOKEN_QUOTA_STATUS_EVALUATED,
-    TOKEN_STATUS_OVERFLOW,
+    META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_REASONING,
+    META_TOKEN_STATUS, META_TOKEN_TOTAL, TOKEN_STATUS_OVERFLOW,
 };
+#[cfg(feature = "token-quota-filter")]
+use crate::token_usage::{META_TOKEN_QUOTA_STATUS, META_TOKEN_QUOTA_VALUE, TOKEN_QUOTA_STATUS_EVALUATED};
 
+#[cfg(feature = "token-quota-filter")]
 pub(crate) fn legacy_weighted_cost_parity_fixture() -> Option<u64> {
     let usage = UsageCounts {
         input: Some(100),
@@ -2904,6 +2905,7 @@ fn shared_quota_source_rejects_legacy_weight_configuration() {
     }
 }
 
+#[cfg(feature = "token-quota-filter")]
 #[tokio::test]
 async fn shared_quota_metadata_is_the_authoritative_reconciliation_value() {
     // The raw total (110) would exhaust capacity, but token_quota's shared
