@@ -7,12 +7,36 @@ use std::future::Future;
 
 use praxis_filter::{FilterAction, HttpFilter};
 
-use super::{META_FAIL_OPEN, META_RESERVATION_ID, TokenRateLimitFilter};
+use super::{
+    META_FAIL_OPEN, META_RESERVATION_ID, TokenRateLimitFilter,
+    weights::{UsageCounts, weighted_cost},
+};
 use crate::token_usage::{
     META_TOKEN_CACHE_READ, META_TOKEN_CACHE_WRITE, META_TOKEN_INPUT, META_TOKEN_OUTPUT, META_TOKEN_QUOTA_STATUS,
     META_TOKEN_QUOTA_VALUE, META_TOKEN_REASONING, META_TOKEN_STATUS, META_TOKEN_TOTAL, TOKEN_QUOTA_STATUS_EVALUATED,
     TOKEN_STATUS_OVERFLOW,
 };
+
+pub(crate) fn legacy_weighted_cost_parity_fixture() -> Option<u64> {
+    let usage = UsageCounts {
+        input: Some(100),
+        output: Some(50),
+        total: Some(150),
+        cache_read: Some(10),
+        cache_write: Some(5),
+        reasoning: Some(10),
+        ..UsageCounts::default()
+    };
+    let weights = super::TokenWeights {
+        input: 1.0,
+        output: 1.0,
+        cached_input: 0.1,
+        cache_write: 2.4,
+        reasoning: 1.0,
+    };
+
+    weighted_cost(usage, weights)
+}
 
 /// Wrap one rule body (already-valid YAML lines, unindented) into a
 /// full one-rule `rules:` config, named `"default"`. Most scenarios

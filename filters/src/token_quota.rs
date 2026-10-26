@@ -568,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "token-rate-limit-filter")]
     fn cel_parity_with_legacy_weighted_cost() {
         // This test verifies that a CEL formula computing the same logic as
         // token_rate_limit's weighted_cost produces identical results.
@@ -598,7 +599,13 @@ mod tests {
             filter.on_response_body(&mut ctx, &mut None, true).unwrap(),
             FilterAction::Continue
         ));
-        assert_eq!(ctx.get_metadata(META_TOKEN_QUOTA_VALUE), Some("148"));
+        let quota = ctx
+            .get_metadata(META_TOKEN_QUOTA_VALUE)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let legacy_cost = crate::token_rate_limit::tests::legacy_weighted_cost_parity_fixture().unwrap();
+        assert_eq!(quota, legacy_cost);
     }
 
     #[test]

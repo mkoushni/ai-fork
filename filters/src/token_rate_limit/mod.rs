@@ -98,7 +98,7 @@
     clippy::too_many_lines,
     reason = "tests"
 )]
-mod tests;
+pub(crate) mod tests;
 
 mod backend;
 mod config;
