@@ -25,7 +25,7 @@ filter_chains:
 
       # Response hooks run in reverse: token_count -> policy/PPE.
       - filter: policy
-        config_path: examples/configs/token-quota-policy.yaml
+        config_path: examples/configs/token-quota.ppe.yaml
         body_access: read_only
 
       - filter: token_count

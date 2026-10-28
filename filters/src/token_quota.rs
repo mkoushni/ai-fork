@@ -325,6 +325,9 @@ fn default_unit() -> String {
 
 /// Calculate a conservative rounded cost over non-overlapping partitions.
 fn weighted_cost(usage: &NormalizedUsage, weights: TokenWeights) -> u64 {
+    if !usage.typed {
+        return usage.total.min(QUOTA_U64_CAP);
+    }
     let cost = to_f64(usage.input.uncached.saturating_add(usage.unclassified)) * weights.input
         + to_f64(usage.input.cache_read) * weights.cached_input
         + to_f64(usage.input.cache_write) * weights.cache_write
@@ -438,6 +441,24 @@ mod tests {
             reasoning: 1.0,
         };
         assert_eq!(weighted_cost(&usage(), weights), 55);
+    }
+
+    #[test]
+    fn total_only_usage_keeps_legacy_unweighted_cost() {
+        let usage = match (UsageCounts {
+            total: Some(42),
+            ..UsageCounts::default()
+        })
+        .normalize()
+        {
+            UsageInput::Available(usage) => usage,
+            UsageInput::Missing | UsageInput::Overflow => panic!("fixture must normalize"),
+        };
+        let weights = TokenWeights {
+            input: 1.0 / 3.0,
+            ..TokenWeights::default()
+        };
+        assert_eq!(weighted_cost(&usage, weights), 42);
     }
 
     #[test]

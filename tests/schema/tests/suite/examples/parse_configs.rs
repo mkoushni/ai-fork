@@ -27,7 +27,7 @@ fn all_example_configs_parse() {
 /// Recursively collect all `.yaml` files under `root`.
 ///
 /// Flow-visualizer sidecars (`*.visualizer.yaml`) and PPE policy documents
-/// (`*-policy.yaml`) are supporting data, not Praxis configs, so they never
+/// (`*.ppe.yaml`) are supporting data, not Praxis configs, so they never
 /// parse as `Config` and are skipped here — mirroring the same exclusions in
 /// `xtask`'s `sync_example_readme`.
 fn walkdir(root: &str) -> Vec<std::path::PathBuf> {
@@ -40,7 +40,7 @@ fn walkdir(root: &str) -> Vec<std::path::PathBuf> {
                 dirs.push(path);
             } else if path.extension().is_some_and(|e| e == "yaml")
                 && !path.to_string_lossy().ends_with(".visualizer.yaml")
-                && !path.to_string_lossy().ends_with("-policy.yaml")
+                && !path.to_string_lossy().ends_with(".ppe.yaml")
             {
                 files.push(path);
             }

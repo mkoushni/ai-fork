@@ -200,7 +200,7 @@ fn collect_entries(configs_dir: &Path) -> BTreeMap<String, Vec<ExampleEntry>> {
 /// Recursively find all example-config `.yaml` files under `dir`.
 ///
 /// Flow-visualizer sidecars (`*.visualizer.yaml`) and PPE policy documents
-/// (`*-policy.yaml`) are supporting data, not example configs, so they are
+/// (`*.ppe.yaml`) are supporting data, not example configs, so they are
 /// excluded from the README table.
 fn walk_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -212,7 +212,7 @@ fn walk_yaml(dir: &Path, out: &mut Vec<PathBuf>) {
             walk_yaml(&path, out);
         } else if path.extension().is_some_and(|e| e == "yaml")
             && !path.to_string_lossy().ends_with(".visualizer.yaml")
-            && !path.to_string_lossy().ends_with("-policy.yaml")
+            && !path.to_string_lossy().ends_with(".ppe.yaml")
         {
             out.push(path);
         }

@@ -7,16 +7,18 @@ use std::{collections::HashMap, sync::mpsc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use praxis_core::config::Config;
+use praxis_core::config::{Config, FailureMode, FilterEntry};
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, FilterFactory, HttpFilter, HttpFilterContext, PolicyResponseOutput,
 };
+#[cfg(feature = "token-rate-limit-filter")]
+use praxis_test_utils::start_proxy;
 use praxis_test_utils::{
-    Backend, free_port, http_send, json_post, parse_body, parse_status, start_proxy, start_proxy_with_registry,
+    Backend, free_port, http_send, json_post, parse_body, parse_status, start_proxy_with_registry,
     test_subrequest_client,
 };
 
-/// The shipped example starts and leaves the provider response unchanged.
+/// The shipped example evaluates PPE quota and leaves the provider response unchanged.
 #[test]
 fn example_config_token_quota() {
     let response = r#"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":40,"total_tokens":160,"prompt_tokens_details":{"cached_tokens":90}}}"#;
@@ -29,7 +31,7 @@ fn example_config_token_quota() {
         HashMap::from([("127.0.0.1:3000", backend.port())]),
     );
     let policy_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/configs/token-quota-policy.yaml")
+        .join("../../examples/configs/token-quota.ppe.yaml")
         .canonicalize()
         .expect("example policy path");
     let policy = config.filter_chains[0]
@@ -41,7 +43,29 @@ fn example_config_token_quota() {
         serde_yaml::Value::String("config_path".to_owned()),
         serde_yaml::Value::String(policy_path.to_string_lossy().into_owned()),
     );
-    let proxy = start_proxy(&config);
+    config.filter_chains[0].filters.insert(
+        2,
+        FilterEntry {
+            filter_type: "test_quota_observer".to_owned(),
+            branch_chains: None,
+            conditions: Vec::new(),
+            name: None,
+            response_conditions: Vec::new(),
+            failure_mode: FailureMode::default(),
+            config: serde_yaml::Value::Null,
+        },
+    );
+    let (sender, receiver) = mpsc::channel();
+    let mut registry = praxis_ai::build_full_registry(&test_subrequest_client());
+    registry
+        .register(
+            "test_quota_observer",
+            FilterFactory::Http(std::sync::Arc::new(move |_| {
+                Ok(Box::new(QuotaObserver { sender: sender.clone() }))
+            })),
+        )
+        .expect("observer registration should succeed");
+    let proxy = start_proxy_with_registry(&config, &registry);
     let raw = http_send(
         proxy.addr(),
         &json_post(
@@ -54,6 +78,17 @@ fn example_config_token_quota() {
         parse_body(&raw),
         response,
         "quota evaluation must not mutate the response"
+    );
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("observer should receive PPE quota output"),
+        [
+            Some("53".to_owned()),
+            Some("weighted-quota-v1".to_owned()),
+            Some("quota_units".to_owned()),
+            Some("evaluated".to_owned()),
+        ]
     );
 }
 
@@ -140,8 +175,9 @@ fn streaming_usage_is_evaluated_at_end_of_stream() {
 #[cfg(feature = "token-rate-limit-filter")]
 #[test]
 fn token_rate_limit_reconciles_from_shared_quota_output() {
-    // Raw total is 110, which would exhaust the 100-unit window. The formula
-    // yields ceil(10/3 + 10 + 90/30) = 17, so a second reservation fits.
+    // Two unreconciled 50-token reservations (100) would exceed the 90-unit
+    // window. The formula yields ceil(10/3 + 10 + 90/30) = 17, so a second
+    // reservation fits only when the limiter settles from the quota result.
     let response = r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":90}}}"#;
     let backend = Backend::fixed(response)
         .header("content-type", "application/json")
@@ -297,7 +333,7 @@ insecure_options:
 /// Write the PPE document that selects the weighted quota plugin.
 fn write_policy() -> (tempfile::TempDir, String) {
     let dir = tempfile::TempDir::new().expect("policy tempdir");
-    let path = dir.path().join("token-quota-policy.yaml");
+    let path = dir.path().join("token-quota.ppe.yaml");
     std::fs::write(
         &path,
         r#"plugins:
