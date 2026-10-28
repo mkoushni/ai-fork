@@ -14,17 +14,15 @@ use praxis_filter::{
 #[cfg(feature = "token-rate-limit-filter")]
 use praxis_test_utils::start_proxy;
 use praxis_test_utils::{
-    Backend, free_port, http_send, json_post, parse_body, parse_status, start_proxy_with_registry,
-    test_subrequest_client,
+    Backend, StatefulCapturingBackend, free_port, http_send, json_post, parse_body, parse_status,
+    start_proxy_with_registry, test_subrequest_client,
 };
 
 /// The shipped example evaluates PPE quota and leaves the provider response unchanged.
 #[test]
 fn example_config_token_quota() {
     let response = r#"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":40,"total_tokens":160,"prompt_tokens_details":{"cached_tokens":90}}}"#;
-    let backend = Backend::fixed(response)
-        .header("content-type", "application/json")
-        .start_with_shutdown();
+    let backend = StatefulCapturingBackend::new(vec![(200, response.to_owned())]).start_with_shutdown();
     let mut config = super::load_example_config(
         "token-quota.yaml",
         free_port(),
@@ -78,6 +76,19 @@ fn example_config_token_quota() {
         parse_body(&raw),
         response,
         "quota evaluation must not mutate the response"
+    );
+    let requests = backend.requests();
+    let forwarded = requests.first().expect("provider should receive one request");
+    assert_eq!(requests.len(), 1, "provider should receive exactly one request");
+    assert_eq!(forwarded.method, "POST");
+    assert_eq!(forwarded.uri, "/v1/chat/completions");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&forwarded.body).expect("forwarded body should be JSON"),
+        serde_json::json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+        "quota filters must preserve the provider request"
     );
     assert_eq!(
         receiver
