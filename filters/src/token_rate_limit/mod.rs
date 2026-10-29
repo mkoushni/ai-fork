@@ -2274,15 +2274,7 @@ impl TokenRateLimitFilter {
         if self.reconciliation_source == ReconciliationSource::SharedQuota {
             #[cfg(feature = "token-quota-filter")]
             {
-                let Some(decision) = crate::token_quota::decision(ctx) else {
-                    tracing::warn!(
-                        rule = rule.name,
-                        "token_rate_limit: token quota policy produced no decision"
-                    );
-                    counter!("praxis_trl_quota_source_missing_total", "rule" => rule.name.clone()).increment(1);
-                    return None;
-                };
-                return shared_quota_cost(decision);
+                return crate::token_quota::decision(ctx).and_then(shared_quota_cost);
             }
             #[cfg(not(feature = "token-quota-filter"))]
             return None;
@@ -2864,6 +2856,16 @@ impl TokenRateLimitFilter {
             .get_metadata(META_RULE_INDEX)
             .and_then(|v| v.parse::<usize>().ok())
             .and_then(|index| self.rules.get(index))?;
+        #[cfg(feature = "token-quota-filter")]
+        if self.reconciliation_source == ReconciliationSource::SharedQuota
+            && crate::token_quota::decision(ctx).is_none()
+        {
+            tracing::warn!(
+                rule = rule.name,
+                "token_rate_limit: token quota policy produced no decision"
+            );
+            counter!("praxis_trl_quota_source_missing_total", "rule" => rule.name.clone()).increment(1);
+        }
         let actual = self.actual_cost(ctx, rule);
         if actual.is_none() {
             tracing::trace!("token_rate_limit: no usable token usage metadata at end of stream, charging at estimate");

@@ -56,6 +56,9 @@ use serde::Deserialize;
 /// also use `budget_exhausted`. Admitted reservations use `reserved`.
 ///
 /// - `praxis_trl_unauthenticated_total{rule}`
+
+/// - `praxis_trl_quota_source_missing_total{rule}`: shared-quota responses for
+///   which PPE produced no decision; `rule` is the configured rule name.
 ///
 /// - `praxis_trl_tokens_reserved_total{rule}`
 ///

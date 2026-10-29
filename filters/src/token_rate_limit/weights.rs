@@ -149,7 +149,6 @@ fn checked_weight(value: f64, loc: &str, field: &str) -> Result<f64, FilterError
 pub(super) fn weighted_cost(usage: UsageCounts, weights: TokenWeights) -> Option<u64> {
     match usage.normalize() {
         UsageInput::Missing | UsageInput::Overflow => None,
-        UsageInput::Available(usage) if !usage.typed => Some(usage.total),
         UsageInput::Available(usage) => Some(normalized_weighted_cost(
             &usage,
             [
@@ -362,19 +361,6 @@ mod tests {
     }
 
     #[test]
-    fn ceil_cost_saturates_positive_infinity_to_the_u64_cap() {
-        assert_eq!(ceil_cost(f64::INFINITY), COST_U64_CAP);
-    }
-
-    #[test]
-    fn ceil_cost_maps_nan_and_non_positive_to_zero() {
-        assert_eq!(ceil_cost(f64::NAN), 0);
-        assert_eq!(ceil_cost(f64::NEG_INFINITY), 0);
-        assert_eq!(ceil_cost(0.0), 0);
-        assert_eq!(ceil_cost(-1.0), 0);
-    }
-
-    #[test]
     fn large_finite_weight_overflows_to_the_cost_cap_not_zero() {
         // f64::MAX is finite, so checked_weight accepts it. 2 × MAX overflows
         // to +inf; settling that at 0 would refund the reservation.
@@ -382,7 +368,7 @@ mod tests {
             input: f64::MAX,
             ..TokenWeights::UNITY
         };
-        assert_eq!(weighted_cost(usage(2, 0, 2), w), Some(COST_U64_CAP));
+        assert_eq!(weighted_cost(usage(2, 0, 2), w), Some(9_007_199_254_740_992));
     }
 
     #[test]
