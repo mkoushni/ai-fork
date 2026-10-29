@@ -3875,7 +3875,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy"
 version = "0.7.5"
-source = "git+https://github.com/praxis-proxy/praxis.git?rev=c9940f48c2f1f52ef0d0fc37886ee3c7384e3753#c9940f48c2f1f52ef0d0fc37886ee3c7384e3753"
+source = "git+https://github.com/praxis-proxy/praxis.git?rev=828f9749fe0b63075a3be8029ec8644a53d754c5#828f9749fe0b63075a3be8029ec8644a53d754c5"
 dependencies = [
  "cargo_metadata",
  "clap",
@@ -3896,7 +3896,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-core"
 version = "0.7.5"
-source = "git+https://github.com/praxis-proxy/praxis.git?rev=c9940f48c2f1f52ef0d0fc37886ee3c7384e3753#c9940f48c2f1f52ef0d0fc37886ee3c7384e3753"
+source = "git+https://github.com/praxis-proxy/praxis.git?rev=828f9749fe0b63075a3be8029ec8644a53d754c5#828f9749fe0b63075a3be8029ec8644a53d754c5"
 dependencies = [
  "bytes",
  "chrono",
@@ -3921,7 +3921,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-filter"
 version = "0.7.5"
-source = "git+https://github.com/praxis-proxy/praxis.git?rev=c9940f48c2f1f52ef0d0fc37886ee3c7384e3753#c9940f48c2f1f52ef0d0fc37886ee3c7384e3753"
+source = "git+https://github.com/praxis-proxy/praxis.git?rev=828f9749fe0b63075a3be8029ec8644a53d754c5#828f9749fe0b63075a3be8029ec8644a53d754c5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3955,7 +3955,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-protocol"
 version = "0.7.5"
-source = "git+https://github.com/praxis-proxy/praxis.git?rev=c9940f48c2f1f52ef0d0fc37886ee3c7384e3753#c9940f48c2f1f52ef0d0fc37886ee3c7384e3753"
+source = "git+https://github.com/praxis-proxy/praxis.git?rev=828f9749fe0b63075a3be8029ec8644a53d754c5#828f9749fe0b63075a3be8029ec8644a53d754c5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3985,7 +3985,7 @@ dependencies = [
 [[package]]
 name = "praxis-proxy-tls"
 version = "0.7.5"
-source = "git+https://github.com/praxis-proxy/praxis.git?rev=c9940f48c2f1f52ef0d0fc37886ee3c7384e3753#c9940f48c2f1f52ef0d0fc37886ee3c7384e3753"
+source = "git+https://github.com/praxis-proxy/praxis.git?rev=828f9749fe0b63075a3be8029ec8644a53d754c5#828f9749fe0b63075a3be8029ec8644a53d754c5"
 dependencies = [
  "arc-swap",
  "notify",
@@ -7306,3 +7306,18 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "quixotic-plecostomus-error"
+version = "0.11.1"
+source = "git+https://github.com/praxis-proxy/pingora?rev=4fde8bb89a96c54ee19134d66d91f03e81f67f0a#4fde8bb89a96c54ee19134d66d91f03e81f67f0a"
+
+[[patch.unused]]
+name = "quixotic-plecostomus-header-serde"
+version = "0.11.1"
+source = "git+https://github.com/praxis-proxy/pingora?rev=4fde8bb89a96c54ee19134d66d91f03e81f67f0a#4fde8bb89a96c54ee19134d66d91f03e81f67f0a"
+
+[[patch.unused]]
+name = "quixotic-plecostomus-http"
+version = "0.11.1"
+source = "git+https://github.com/praxis-proxy/pingora?rev=4fde8bb89a96c54ee19134d66d91f03e81f67f0a#4fde8bb89a96c54ee19134d66d91f03e81f67f0a"

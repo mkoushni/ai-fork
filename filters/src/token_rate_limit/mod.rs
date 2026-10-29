@@ -2274,7 +2274,15 @@ impl TokenRateLimitFilter {
         if self.reconciliation_source == ReconciliationSource::SharedQuota {
             #[cfg(feature = "token-quota-filter")]
             {
-                return crate::token_quota::decision(ctx).and_then(shared_quota_cost);
+                let Some(decision) = crate::token_quota::decision(ctx) else {
+                    tracing::warn!(
+                        rule = rule.name,
+                        "token_rate_limit: token quota policy produced no decision"
+                    );
+                    counter!("praxis_trl_quota_source_missing_total", "rule" => rule.name.clone()).increment(1);
+                    return None;
+                };
+                return shared_quota_cost(decision);
             }
             #[cfg(not(feature = "token-quota-filter"))]
             return None;
@@ -2911,6 +2919,12 @@ impl TokenRateLimitFilter {
 /// Accept only successfully evaluated PPE quota decisions.
 #[cfg(feature = "token-quota-filter")]
 fn shared_quota_cost(decision: crate::token_quota::TokenQuotaDecision) -> Option<u64> {
+    if decision.status != TokenQuotaResultStatus::Evaluated {
+        tracing::trace!(
+            status = decision.status.as_str(),
+            "token_rate_limit: token quota decision was not evaluated"
+        );
+    }
     (decision.status == TokenQuotaResultStatus::Evaluated)
         .then_some(decision.value)
         .flatten()

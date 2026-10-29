@@ -145,6 +145,37 @@ pub(crate) struct NormalizedUsage {
     pub(crate) reported: ReportedUsage,
 }
 
+/// Compute a conservative rounded cost over the normalized, non-overlapping
+/// token partitions. Both quota implementations use this single path so
+/// cache and reasoning breakdowns cannot drift apart.
+pub(crate) fn weighted_cost(usage: &NormalizedUsage, weights: [f64; 5]) -> u64 {
+    const CAP: u64 = 9_007_199_254_740_992;
+    const CAP_F64: f64 = 9_007_199_254_740_992.0;
+    if !usage.typed {
+        return usage.total.min(CAP);
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts are clamped to exactly representable 2^53"
+    )]
+    let to_f64 = |value: u64| value.min(CAP) as f64;
+    let cost = to_f64(usage.input.uncached.saturating_add(usage.unclassified)) * weights[0]
+        + to_f64(usage.input.cache_read) * weights[1]
+        + to_f64(usage.input.cache_write) * weights[2]
+        + to_f64(usage.output.visible) * weights[3]
+        + to_f64(usage.output.reasoning) * weights[4];
+    if cost.is_nan() || cost <= 0.0 {
+        return 0;
+    }
+    if cost.is_infinite() {
+        return CAP;
+    }
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "capped to 2^53")]
+    {
+        cost.min(CAP_F64).ceil() as u64
+    }
+}
+
 /// Input token partitions exposed to consumers.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct InputUsage {

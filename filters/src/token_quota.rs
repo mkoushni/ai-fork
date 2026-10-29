@@ -12,7 +12,9 @@ use ppe::prelude::{
 use praxis_filter::{HttpFilterContext, PolicyResponseContext, PolicyResponseOutput};
 use serde::{Deserialize, Serialize};
 
-use crate::token_usage::normalized::{NormalizedUsage, UsageCounts, UsageInput};
+use crate::token_usage::normalized::{
+    NormalizedUsage, UsageCounts, UsageInput, weighted_cost as normalized_weighted_cost,
+};
 
 /// PPE plugin kind configured by operators.
 pub(crate) const KIND: &str = "ai/token-quota";
@@ -22,10 +24,6 @@ const CUSTOM_KEY: &str = "token_quota";
 const MAX_FORMULA_ID_BYTES: usize = 64;
 /// Maximum non-currency unit name length.
 const MAX_UNIT_BYTES: usize = 32;
-/// Largest integer represented exactly by quota ledgers' `f64` values.
-const QUOTA_U64_CAP: u64 = 9_007_199_254_740_992;
-/// Floating-point form of [`QUOTA_U64_CAP`].
-const QUOTA_F64_CAP: f64 = 9_007_199_254_740_992.0;
 
 /// Operator configuration for one policy-selected formula plugin instance.
 #[derive(Debug, Clone, Deserialize)]
@@ -231,7 +229,16 @@ impl HookHandler<CmfHook> for TokenQuotaPlugin {
             |usage| {
                 (
                     TokenQuotaResultStatus::Evaluated,
-                    Some(weighted_cost(usage, self.config.weights)),
+                    Some(normalized_weighted_cost(
+                        usage,
+                        [
+                            self.config.weights.input,
+                            self.config.weights.cached_input,
+                            self.config.weights.cache_write,
+                            self.config.weights.output,
+                            self.config.weights.reasoning,
+                        ],
+                    )),
                 )
             },
         );
@@ -323,44 +330,6 @@ fn default_unit() -> String {
     "quota_units".to_owned()
 }
 
-/// Calculate a conservative rounded cost over non-overlapping partitions.
-fn weighted_cost(usage: &NormalizedUsage, weights: TokenWeights) -> u64 {
-    if !usage.typed {
-        return usage.total.min(QUOTA_U64_CAP);
-    }
-    let cost = to_f64(usage.input.uncached.saturating_add(usage.unclassified)) * weights.input
-        + to_f64(usage.input.cache_read) * weights.cached_input
-        + to_f64(usage.input.cache_write) * weights.cache_write
-        + to_f64(usage.output.visible) * weights.output
-        + to_f64(usage.output.reasoning) * weights.reasoning;
-    if cost.is_nan() || cost <= 0.0 {
-        return 0;
-    }
-    if cost.is_infinite() {
-        return QUOTA_U64_CAP;
-    }
-    let capped = cost.min(QUOTA_F64_CAP).ceil();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "capped is finite, non-negative, and at most exactly representable 2^53"
-    )]
-    {
-        capped as u64
-    }
-}
-
-/// Convert a count without exceeding the exactly representable integer range.
-fn to_f64(value: u64) -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "value is capped at exactly representable 2^53"
-    )]
-    {
-        value.min(QUOTA_U64_CAP) as f64
-    }
-}
-
 /// Register the AI quota plugin factory with the policy filter.
 pub(crate) fn register_factory() {
     praxis_filter::register_policy_plugin_factory(KIND, Arc::new(|| Box::new(TokenQuotaFactory)));
@@ -413,6 +382,19 @@ pub(crate) fn decision(ctx: &HttpFilterContext<'_>) -> Option<TokenQuotaDecision
 )]
 mod tests {
     use super::*;
+
+    fn weighted_cost(usage: &NormalizedUsage, weights: TokenWeights) -> u64 {
+        normalized_weighted_cost(
+            usage,
+            [
+                weights.input,
+                weights.cached_input,
+                weights.cache_write,
+                weights.output,
+                weights.reasoning,
+            ],
+        )
+    }
 
     fn usage() -> NormalizedUsage {
         match (UsageCounts {

@@ -351,6 +351,7 @@ fn write_policy() -> (tempfile::TempDir, String) {
   - name: weighted-quota-v1
     kind: ai/token-quota
     hooks: [cmf.llm_output]
+    capabilities: [metadata_only_response]
     mode: sequential
     on_error: fail
     config:

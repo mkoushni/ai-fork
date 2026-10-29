@@ -23,8 +23,8 @@
 use praxis_filter::FilterError;
 use serde::Deserialize;
 
-use crate::token_usage::normalized::{NormalizedUsage, UsageInput};
 pub(super) use crate::token_usage::normalized::{UsageCounts, parse_u64_meta};
+use crate::token_usage::normalized::{UsageInput, weighted_cost as normalized_weighted_cost};
 
 /// Cap for the float→integer conversion. Matches the `f64` safe-integer
 /// bound the ledgers already enforce on `capacity`, so a weighted cost can
@@ -155,65 +155,16 @@ pub(super) fn weighted_cost(usage: UsageCounts, weights: TokenWeights) -> Option
     match usage.normalize() {
         UsageInput::Missing | UsageInput::Overflow => None,
         UsageInput::Available(usage) if !usage.typed => Some(usage.total),
-        UsageInput::Available(usage) => Some(partitioned_cost(&usage, weights)),
-    }
-}
-
-/// Partition nested types, then apply weights. Malformed breakdowns that
-/// exceed their parent are clamped so the residual never underflows.
-///
-/// When `token.total` exceeds the typed parents (Bedrock Converse:
-/// `inputTokens` is uncached-only and cache lives only in `totalTokens`),
-/// the uncovered remainder is charged at [`TokenWeights::input`] so the
-/// cost cannot fall below what `token.total` covered.
-fn partitioned_cost(usage: &NormalizedUsage, weights: TokenWeights) -> u64 {
-    let cost = to_cost_f64(usage.input.uncached) * weights.input
-        + to_cost_f64(usage.input.cache_read) * weights.cached_input
-        + to_cost_f64(usage.input.cache_write) * weights.cache_write
-        + to_cost_f64(usage.output.visible) * weights.output
-        + to_cost_f64(usage.output.reasoning) * weights.reasoning
-        + to_cost_f64(usage.unclassified) * weights.input;
-    ceil_cost(cost)
-}
-
-/// `f64` form of [`COST_U64_CAP`]. `2^53` is an exact `f64` value.
-const COST_F64_CAP: f64 = 9_007_199_254_740_992.0;
-
-/// Convert a token count to `f64` for weighting. Clamped to [`COST_U64_CAP`]
-/// so the mantissa stays exact (the ledgers already reject capacities
-/// above this bound).
-fn to_cost_f64(tokens: u64) -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "clamped to 2^53, which is exactly representable in f64"
-    )]
-    {
-        tokens.min(COST_U64_CAP) as f64
-    }
-}
-
-/// Ceiling conversion so a quota never under-charges a fractional cost
-/// (9 cached tokens × 0.1 = 0.9 → 1).
-///
-/// Positive overflow (`+inf`, including a finite weight times a count that
-/// exceeds the `f64` range) saturates to [`COST_U64_CAP`] so the request
-/// cannot settle at zero and refund its reservation. `NaN` and non-positive
-/// results stay 0.
-fn ceil_cost(cost: f64) -> u64 {
-    if cost.is_nan() || cost <= 0.0 {
-        return 0;
-    }
-    if cost.is_infinite() {
-        return COST_U64_CAP;
-    }
-    let capped = cost.min(COST_F64_CAP).ceil();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "capped is finite, non-negative, and <= 2^53, so ceil is an exact u64"
-    )]
-    {
-        capped as u64
+        UsageInput::Available(usage) => Some(normalized_weighted_cost(
+            &usage,
+            [
+                weights.input,
+                weights.cached_input,
+                weights.cache_write,
+                weights.output,
+                weights.reasoning,
+            ],
+        )),
     }
 }
 

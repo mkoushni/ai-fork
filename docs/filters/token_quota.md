@@ -17,6 +17,7 @@ plugins:
   - name: weighted-quota-v1
     kind: ai/token-quota
     hooks: [cmf.llm_output]
+    capabilities: [metadata_only_response]
     mode: sequential
     on_error: fail
     config:
@@ -37,7 +38,8 @@ routes:
 ```
 
 Different routes can run different plugin instances, so PPE owns formula
-selection by model, provider scope, or other route criteria. All weights must
+selection by model or route. Backend/provider-specific overrides are not
+currently available and are a follow-up gap. All weights must
 be finite and non-negative. Omitted weights default to `1.0`; `unit` defaults
 to `quota_units` and is not a currency.
 
