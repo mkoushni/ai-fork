@@ -26,11 +26,6 @@ use serde::Deserialize;
 pub(super) use crate::token_usage::normalized::{UsageCounts, parse_u64_meta};
 use crate::token_usage::normalized::{UsageInput, weighted_cost as normalized_weighted_cost};
 
-/// Cap for the float→integer conversion. Matches the `f64` safe-integer
-/// bound the ledgers already enforce on `capacity`, so a weighted cost can
-/// never be a value the backends cannot represent exactly.
-const COST_U64_CAP: u64 = 9_007_199_254_740_992; // 2^53
-
 /// Operator-facing per-type weights. Omitted keys stay `None` so a rule
 /// overlay can replace only the types it cares about.
 ///
